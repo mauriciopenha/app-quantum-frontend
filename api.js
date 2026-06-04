@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // Tu IP local para conectar el celular con la computadora
-const API_URL = 'http://192.168.1.24:8000/api/'; 
+const API_URL = 'http://192.168.1.131:8000/api/'; 
 
 const api = axios.create({
   baseURL: API_URL,

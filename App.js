@@ -8,6 +8,8 @@ import AttendanceHistoryScreen from './screens/AttendanceHistoryScreen';
 import MaterialInventoryScreen from './screens/MaterialInventoryScreen';
 import MaterialMovementScreen from './screens/MaterialMovementScreen';
 import ProjectListScreen from './screens/ProjectListScreen'; 
+import ProjectDetailScreen from './screens/ProjectDetailScreen';
+import ProjectChecklistScreen from './screens/ProjectChecklistScreen';
 
 // Habilitamos animaciones para que los menús se abran de forma fluida en Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -17,6 +19,7 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 export default function App() {
   const [token, setToken] = useState(null);
   const [currentScreen, setCurrentScreen] = useState('menu'); 
+  const [proyectoSeleccionado, setProyectoSeleccionado] = useState(null);
 
   // Nuevos estados para controlar la apertura de los dos menús agrupados
   const [asistenciasAbierto, setAsistenciasAbierto] = useState(false);
@@ -44,13 +47,16 @@ export default function App() {
     if (currentScreen === 'history') return '📋 Historial de Marcas';
     if (currentScreen === 'inventory') return '📦 Inventario de Bodega';
     if (currentScreen === 'movement') return '🔄 Registrar Movimiento'; 
-    if (currentScreen === 'projects') return '🚧 Control de Proyectos';
+    if (currentScreen === 'projects') return '🚧 Material por Proyecto';
+    if (currentScreen === 'checklist_control') return '📊 Avance de Proyectos'; // 🟢 NUEVO
     return '';
   };
 
   const handleBackPress = () => {
     if (currentScreen === 'movement') {
       setCurrentScreen('inventory');
+    } else if (currentScreen === 'projects' && proyectoSeleccionado) {
+      setProyectoSeleccionado(null); // 🟢 Si está en el detalle, regresa a la lista de proyectos
     } else {
       setCurrentScreen('menu');
     }
@@ -104,7 +110,7 @@ export default function App() {
               onPress={toggleAsistencias}
             >
               <Text style={styles.menuButtonText}>
-                {asistenciasAbierto ? '▼ Asistencias' : '▶ Asistencias'}
+                {asistenciasAbierto ? '▲ Asistencias' : '▼ Asistencias'}   
               </Text>
             </TouchableOpacity>
 
@@ -132,7 +138,7 @@ export default function App() {
               onPress={toggleInventario}
             >
               <Text style={styles.menuButtonText}>
-                {inventarioAbierto ? '▼ Inventario de Material' : '▶ Inventario de Material'}
+                {inventarioAbierto ? '▲ Inventario de Material' : '▼ Inventario de Material'} 
               </Text>
             </TouchableOpacity>
 
@@ -153,6 +159,14 @@ export default function App() {
                 </TouchableOpacity>
               </View>
             )}
+
+            {/* 🟢 BOTÓN PRINCIPAL 3: CONTROL DE PROYECTOS (NUEVO E INDEPENDIENTE) */}
+            <TouchableOpacity 
+              style={[styles.menuButton, { backgroundColor: '#F39C12', marginTop: 15 }]} 
+              onPress={() => setCurrentScreen('checklist_control')}
+            >
+              <Text style={styles.menuButtonText}>🚧 Control de Proyectos</Text>
+            </TouchableOpacity>
 
             {/* BOTÓN DE LOGOUT (Se mantiene intacto abajo) */}
             <TouchableOpacity 
@@ -188,7 +202,28 @@ export default function App() {
         )}
 
         {currentScreen === 'projects' && (
-          <ProjectListScreen token={token} />
+          !proyectoSeleccionado ? (
+            // Si no hay proyecto seleccionado, muestra la lista de todos los proyectos
+            <ProjectListScreen 
+              token={token} 
+              onSeleccionarProyecto={(id, nombre) => setProyectoSeleccionado({ id, nombre })} 
+            />
+          ) : (
+            // Si picó un proyecto, cargamos la súper pantalla combinada que crearemos
+            <ProjectDetailScreen 
+              token={token} 
+              proyectoId={proyectoSeleccionado.id} 
+              proyectoNombre={proyectoSeleccionado.nombre}
+            />
+          )
+        )}
+
+        {/* 🟢 NUEVA PANTALLA INTEGRAL DE PROYECTOS */}
+        {currentScreen === 'checklist_control' && (
+          <ProjectChecklistScreen 
+            token={token} 
+            onVolver={() => setCurrentScreen('menu')} 
+          />
         )}
       </View>
     </SafeAreaView>

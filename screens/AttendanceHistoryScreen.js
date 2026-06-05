@@ -1,64 +1,150 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Alert } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Alert, TouchableOpacity, Linking } from 'react-native';
 import api from '../api'; 
 import EmpresaLoader from './EmpresaLoader'; 
 
+// 🟢 COMPONENTE INDEPENDIENTE PARA LA TARJETA (Evita el error de Invalid Hook Call)
+const TarjetaAsistencia = ({ item }) => {
+  const [expandido, setExpandido] = useState(false);
+  const tieneExtras = parseFloat(item.totalExtras) > 0;
+
+  const abrirMapa = (latitud, longitud) => {
+    if (!latitud || !longitud || latitud === 0 || longitud === 0) {
+      Alert.alert("Sin ubicación", "Este registro no cuenta con coordenadas GPS válidas.");
+      return;
+    }
+    const url = `http://maps.google.com/?q=${latitud},${longitud}`;
+    Linking.openURL(url).catch(() => {
+      Alert.alert("Error", "No se pudo abrir Google Maps.");
+    });
+  };
+
+  // Helper para formatear la hora limpia "HH:MM A/PM" de cada marca interna
+  const extraerHoraDetalle = (fechaCompleta) => {
+    if (!fechaCompleta) return '--:--';
+    const partes = fechaCompleta.split(" ");
+    if (partes[1] && partes[2]) {
+      return `${partes[1]} ${partes[2]}`; // Devuelve "08:30 AM" o "04:40 PM"
+    }
+    return partes[1] ? partes[1].substring(0, 5) : '--:--';
+  };
+
+  return (
+    // 1. Cambiamos TouchableOpacity por View para que la tarjeta no se cierre sola
+    <View style={styles.card}>
+      <View style={styles.cardHeader}>
+        <Text style={styles.fechaTitulo}>📅 {item.fecha}</Text>
+        <Text style={styles.cardTag}>{item.tagDia}</Text>
+      </View>
+      
+      <View style={styles.cardBody}>
+        {/* Fila de Resumen Principal */}
+        <View style={styles.horasFila}>
+          <Text style={styles.horaDetalle}><Text style={styles.entradaTexto}>🟢 Ent:</Text> {item.entrada}</Text>
+          <Text style={styles.horaDetalle}><Text style={styles.salidaTexto}>🔴 Sal:</Text> {item.salida}</Text>
+          <Text style={styles.horaDetalle}><Text style={styles.totalTexto}>Total:</Text> {item.totalHoras} hrs</Text>
+        </View>
+
+        {tieneExtras && (
+          <View style={styles.badgeExtra}>
+            <Text style={styles.badgeExtraTexto}>⏱️ ¡Buen trabajo! +{item.totalExtras} horas extras acumuladas</Text>
+          </View>
+        )}
+
+        {/* SECCIÓN DESPLEGABLE */}
+        {expandido && (
+          <View style={styles.seccionDetalleContenedor}>
+            <View style={styles.divisorLine} />
+            <Text style={styles.tituloDetalleMarcas}>📋 Detalle de Movimientos del Día:</Text>
+            
+            {item.marcas && item.marcas.map((marca, index) => {
+              // 🔍 Dejamos este console.log temporal para espiar qué datos nos manda Django por la terminal
+              console.log("Datos de la marca recibida de Django:", marca);
+
+              const tieneGps = marca.latitud && marca.longitud && parseFloat(marca.latitud) !== 0 && parseFloat(marca.longitud) !== 0;
+
+              return (
+                <View key={marca.id || index} style={styles.marcaDetalleItem}>
+                  <View style={styles.marcaDetalleIzquierda}>
+                    <Text style={marca.tipo === 'ENTRADA' ? styles.entradaTexto : styles.salidaTexto}>
+                      {marca.tipo === 'ENTRADA' ? '📥 ENTRADA' : '📤 SALIDA'}
+                    </Text>
+                    <Text style={styles.horaMarcadaTexto}>🕗 {extraerHoraDetalle(marca.fecha_hora)}</Text>
+                  </View>
+                  
+                  <TouchableOpacity 
+                    style={[styles.btnMapa, !tieneGps && styles.btnMapaDeshabilitado]}
+                    onPress={() => abrirMapa(marca.latitud, marca.longitud)}
+                    disabled={!tieneGps}
+                  >
+                    <Text style={styles.btnMapaTexto}>{tieneGps ? '📍 Ver Mapa' : '❌ Sin GPS'}</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* 2. Convertimos el indicador inferior en el ÚNICO botón para abrir/cerrar */}
+        <TouchableOpacity 
+          onPress={() => setExpandido(!expandido)} 
+          activeOpacity={0.6}
+          style={{ marginTop: 10, paddingVertical: 4 }}
+        >
+          <Text style={styles.indicadorToque}>
+            {expandido ? '🔼 Toca aquí para ocultar detalles' : '🔽 Toca aquí para ver las 4 marcas y lugar'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
+// 🏛️ COMPONENTE PRINCIPAL DE LA PANTALLA
 export default function AttendanceHistoryScreen({ token }) { 
   const [historial, setHistorial] = useState([]);
   const [cargando, setCargando] = useState(true);
 
-  // 🛠️ Función calcular extras - PROTECCIÓN ABSOLUTA CONTRA REGISTROS VIEJOS
   const calcularHorasYExtras = (marcasDelDia, tagDia) => {
-  if (!marcasDelDia || !Array.isArray(marcasDelDia)) {
-    return { total: '--', extras: '0.0' };
-  }
-
-  // Helper para convertir "DD/MM/YYYY hh:mm A" a un objeto Date real de JavaScript
-  const parsearFechaDjango = (stringFecha) => {
-    if (!stringFecha) return null;
-    try {
-      // Separar fecha de hora ("02/06/2026" y "08:07 PM")
-      const [fecha, tiempo, periodo] = stringFecha.split(" ");
-      const [dia, mes, anio] = fecha.split("/");
-      let [horas, minutos] = tiempo.split(":");
-      
-      let horaInt = parseInt(horas, 10);
-      if (periodo === "PM" && horaInt < 12) horaInt += 12;
-      if (periodo === "AM" && horaInt === 12) horaInt = 0;
-      
-      return new Date(anio, mes - 1, dia, horaInt, parseInt(minutos, 10));
-    } catch (e) {
-      return null;
+    if (!marcasDelDia || !Array.isArray(marcasDelDia)) {
+      return { total: '--', extras: '0.0' };
     }
-  };
 
-  // 1. Filtrar registros válidos y parsear sus fechas
-  const marcasProcesadas = marcasDelDia
-    .map(m => ({ ...m, dateObj: parsearFechaDjango(m.fecha_hora) }))
-    .filter(m => m.dateObj !== null);
+    const parsearFechaDjango = (stringFecha) => {
+      if (!stringFecha) return null;
+      try {
+        const [fecha, tiempo, periodo] = stringFecha.split(" ");
+        const [dia, mes, anio] = fecha.split("/");
+        let [horas, minutos] = tiempo.split(":");
+        
+        let horaInt = parseInt(horas, 10);
+        if (periodo === "PM" && horaInt < 12) horaInt += 12;
+        if (periodo === "AM" && horaInt === 12) horaInt = 0;
+        
+        return new Date(anio, mes - 1, dia, horaInt, parseInt(minutos, 10));
+      } catch (e) {
+        return null;
+      }
+    };
 
-  if (marcasProcesadas.length < 2) return { total: '--', extras: '0.0' };
+    const marcasProcesadas = marcasDelDia
+      .map(m => ({ ...m, dateObj: parsearFechaDjango(m.fecha_hora) }))
+      .filter(m => m.dateObj !== null);
 
-  // 2. Ordenar cronológicamente
-  const marcasOrdenadas = marcasProcesadas.sort((a, b) => a.dateObj - b.dateObj);
+    if (marcasProcesadas.length < 2) return { total: '--', extras: '0.0' };
 
-  let totalHorasTrabajadas = 0;
+    const marcasOrdenadas = marcasProcesadas.sort((a, b) => a.dateObj - b.dateObj);
+    let totalHorasTrabajadas = 0;
 
-  // 3. Emparejar ENTRADA con la SIGUIENTE SALIDA disponible de forma estricta
-  for (let i = 0; i < marcasOrdenadas.length; i++) {
-    const marcaActual = marcasOrdenadas[i];
-    
-    if (marcaActual.tipo === 'ENTRADA') {
-      // Busca la primera salida cronológica que ocurra DESPUÉS de esta entrada
-      const siguienteSalida = marcasOrdenadas.find((m, index) => index > i && m.tipo === 'SALIDA');
-      
-      if (siguienteSalida) {
+    for (let i = 0; i < marcasOrdenadas.length; i++) {
+      const marcaActual = marcasOrdenadas[i];
+      if (marcaActual.tipo === 'ENTRADA') {
+        const siguienteSalida = marcasOrdenadas.find((m, index) => index > i && m.tipo === 'SALIDA');
+        if (siguienteSalida) {
           const diferenciaMs = siguienteSalida.dateObj - marcaActual.dateObj;
-          // Evitamos que sume 0 si fueron hechas en el mismo minuto por error
           if (!isNaN(diferenciaMs) && diferenciaMs > 60000) { 
             totalHorasTrabajadas += diferenciaMs / (1000 * 60 * 60);
           }
-          // Avanzamos el índice hasta donde encontramos la salida para continuar el flujo
           i = marcasOrdenadas.indexOf(siguienteSalida);
         }
       }
@@ -66,9 +152,8 @@ export default function AttendanceHistoryScreen({ token }) {
 
     if (totalHorasTrabajadas === 0) return { total: '--', extras: '0' };
 
-    // 4. Reglas de negocio sobre horas netas iniciales
     let horasExtrasBrutas = 0;
-    const numeroDiaSemana = marcasOrdenadas[0].dateObj.getDay(); // 0 = Domingo, 6 = Sábado
+    const numeroDiaSemana = marcasOrdenadas[0].dateObj.getDay();
 
     if (tagDia === 'Festivo/Domingo' || numeroDiaSemana === 0) {
       horasExtrasBrutas = totalHorasTrabajadas;
@@ -78,73 +163,58 @@ export default function AttendanceHistoryScreen({ token }) {
       horasExtrasBrutas = totalHorasTrabajadas > 8 ? totalHorasTrabajadas - 8 : 0;
     }
 
-    // 🧠 --- NUEVA LÓGICA DE REDONDEO ESTRICTO (Umbral de 45 minutos) ---
     let horasExtrasRedondeadas = 0;
-
     if (horasExtrasBrutas > 0) {
-      const parteEntera = Math.floor(horasExtrasBrutas); // Las horas completas (ej: de 1.8 saca 1)
-      const residuoDecimal = horasExtrasBrutas - parteEntera; // Los minutos en decimal (ej: 0.8)
+      const parteEntera = Math.floor(horasExtrasBrutas); 
+      const residuoDecimal = horasExtrasBrutas - parteEntera; 
 
-      // 45 minutos equivalen a 0.75 en base decimal (45 / 60 = 0.75)
       if (residuoDecimal >= 0.75) {
-        horasExtrasRedondeadas = parteEntera + 1; // Cumplió el umbral, se le paga la siguiente hora entera
+        horasExtrasRedondeadas = parteEntera + 1; 
       } else {
-        horasExtrasRedondeadas = parteEntera; // No llegó a los 45 min, se queda con las horas enteras que llevaba
+        horasExtrasRedondeadas = parteEntera; 
       }
     }
 
     return {
-      total: totalHorasTrabajadas.toFixed(1), // Mantiene el total real trabajado con un decimal
-      extras: horasExtrasRedondeadas.toString() // Devuelve el número entero limpio (ej: "1", "2", "0")
+      total: totalHorasTrabajadas.toFixed(1), 
+      extras: horasExtrasRedondeadas.toString() 
     };
   };
 
   const obtenerHistorial = async () => {
     try {
       setCargando(true);
-      
       if (!token) {
         Alert.alert("Error", "No se encontró una sesión activa.");
         return;
       }
       
       const response = await api.get('asistencia/historial/', {
-        headers: {
-          'Authorization': `Bearer ${token}`, 
-        },
+        headers: { 'Authorization': `Bearer ${token}` },
       });
 
       const datosRaw = response.data || [];
       const diasAgrupados = {};
 
-      // --- AGRUPACIÓN MEJORADA PARA 4 MARCAS ---
       datosRaw.forEach(marca => {
         if (!marca.fecha_hora) return;
-
-        // Extraemos solo la fecha "YYYY-MM-DD" para agrupar correctamente
         const fechaDia = marca.fecha_hora.split(" ")[0] || marca.fecha_hora.split("T")[0];
 
         if (!diasAgrupados[fechaDia]) {
           diasAgrupados[fechaDia] = {
             id: marca.id,
             fecha: fechaDia,
-            tagDia: marca.detalle_dia || 'Ordinario', // "Ordinario" o "Festivo/Domingo"
-            marcas: [], // <-- Aquí metemos todas las marcas del día (las 4)
+            tagDia: marca.detalle_dia || 'Ordinario', 
+            marcas: [], 
             latitud: marca.latitud,
             longitud: marca.longitud
           };
         }
-
-        // Metemos la marca completa al listado de ese día
         diasAgrupados[fechaDia].marcas.push(marca);
       });
 
-      // --- PROCESAMIENTO DE HORAS Y EXTRAS ---
       const listaProcesada = Object.values(diasAgrupados).map(dia => {
-        // Ejecutamos el calculador pasándole el arreglo de marcas de este día
         const { total, extras } = calcularHorasYExtras(dia.marcas, dia.tagDia);
-
-        // Clasificamos entradas y salidas ordenadas por ID para saber cuál fue la primera y cuál la última
         const entradas = dia.marcas.filter(m => m.tipo === 'ENTRADA').sort((a, b) => a.id - b.id);
         const salidas = dia.marcas.filter(m => m.tipo === 'SALIDA').sort((a, b) => a.id - b.id);
 
@@ -152,15 +222,12 @@ export default function AttendanceHistoryScreen({ token }) {
           ...dia,
           totalHoras: total,
           totalExtras: extras,
-          // Guardamos las horas limpias formateadas en "HH:MM" para que la tarjeta las pinte
           entrada: entradas[0] ? entradas[0].fecha_hora.split(" ")[1].substring(0, 5) : '--:--',
           salida: salidas[salidas.length - 1] ? salidas[salidas.length - 1].fecha_hora.split(" ")[1].substring(0, 5) : '--:--',
         };
       });
 
-      // Las ordenamos para que aparezcan las más recientes arriba
       listaProcesada.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
-      
       setHistorial(listaProcesada);
 
     } catch (error) {
@@ -175,39 +242,6 @@ export default function AttendanceHistoryScreen({ token }) {
     obtenerHistorial();
   }, []);
 
-  const renderItem = ({ item }) => {
-    // CORRECCIÓN: Leemos directamente los datos que ya calculamos en obtenerHistorial
-    const tieneExtras = parseFloat(item.totalExtras) > 0;
-
-    return (
-      <View style={styles.card}>
-        <View style={styles.cardHeader}>
-          {/* Mostramos la fecha real del día en grande */}
-          <Text style={styles.fechaTitulo}>📅 {item.fecha}</Text>
-          <Text style={styles.cardTag}>{item.tagDia}</Text>
-        </View>
-        
-        <View style={styles.cardBody}>
-          <View style={styles.horasFila}>
-            <Text style={styles.horaDetalle}><Text style={styles.entradaTexto}>🟢 Ent:</Text> {item.entrada}</Text>
-            <Text style={styles.horaDetalle}><Text style={styles.salidaTexto}>🔴 Sal:</Text> {item.salida}</Text>
-            <Text style={styles.horaDetalle}><Text style={styles.totalTexto}>Total:</Text> {item.totalHoras} hrs</Text>
-          </View>
-
-          {tieneExtras && (
-            <View style={styles.badgeExtra}>
-              <Text style={styles.badgeExtraTexto}>⏱️ ¡Buen trabajo! +{item.totalExtras} horas extras acumuladas</Text>
-            </View>
-          )}
-
-          <Text style={styles.geoText}>
-            📍 Lat: {item.latitud ? item.latitud.toFixed(4) : '0.0000'} | Lon: {item.longitud ? item.longitud.toFixed(4) : '0.0000'}
-          </Text>
-        </View>
-      </View>
-    );
-  };
-
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Mi Historial de Asistencia</Text>
@@ -221,7 +255,7 @@ export default function AttendanceHistoryScreen({ token }) {
         <FlatList
           data={historial}
           keyExtractor={(item) => item.fecha}
-          renderItem={renderItem}
+          renderItem={({ item }) => <TarjetaAsistencia item={item} />} // 🟢 Llamada limpia al componente tarjeta
           contentContainerStyle={styles.listContainer}
           ListEmptyComponent={
             <Text style={styles.emptyText}>No tienes registros de asistencia todavía.</Text>
@@ -296,4 +330,42 @@ const styles = StyleSheet.create({
   badgeExtraTexto: { color: '#856404', fontSize: 12, fontWeight: '700' },
   geoText: { fontSize: 12, color: '#6c757d', fontStyle: 'italic', marginTop: 4 },
   emptyText: { textAlign: 'center', color: '#6c757d', marginTop: 30, fontSize: 16 },
+
+  seccionDetalleContenedor: { marginTop: 10, backgroundColor: '#f1f3f5', padding: 10, borderRadius: 8 },
+  divisorLine: { height: 1, backgroundColor: '#dee2e6', marginBottom: 10 },
+  tituloDetalleMarcas: { fontSize: 13, fontWeight: '700', color: '#495057', marginBottom: 8 },
+  marcaDetalleItem: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    backgroundColor: '#ffffff', 
+    padding: 8, 
+    borderRadius: 6, 
+    marginBottom: 6,
+    borderLeftWidth: 3,
+    borderLeftColor: '#87C442'
+  },
+  marcaDetalleIzquierda: { flex: 1 },
+  marcaDetalleDerecha: { alignItems: 'flex-end', justifyContent: 'center' },
+  horaMarcadaTexto: { fontSize: 12, fontWeight: '600', color: '#2D2E31', marginTop: 2 },
+  geoDetalleText: { fontSize: 11, color: '#6c757d', fontFamily: 'monospace' },
+  indicadorToque: { textAlign: 'center', fontSize: 11, color: '#A0A1A6', marginTop: 6, fontWeight: '500' },
+
+  // 🟢 
+  btnMapa: {
+    backgroundColor: '#E8F5E9',
+    borderWidth: 1,
+    borderColor: '#C8E6C9',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+  },
+  btnMapaDeshabilitado: {
+    backgroundColor: '#ECEFF1',
+    borderColor: '#CFD8DC',
+  },
+  btnMapaTexto: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#2E7D32',
+  },
 });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, Alert } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, Alert, Modal, ScrollView } from 'react-native';
 import api from '../api';
 import EmpresaLoader from './EmpresaLoader';
 
@@ -15,6 +15,13 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
 
   // ESTADOS DEL MÓDULO 1: AVANCE (Checklist)
   const [checklist, setChecklist] = useState([]);
+
+  // 🎛️ NUEVOS ESTADOS SEGUROS PARA LA VENTANA MODAL (EL LAPICITO)
+  const [modalVisible, setModalVisible] = useState(false);
+  const [etapaSeleccionada, setEtapaSeleccionada] = useState(null);
+  const [nuevoPorcentaje, setNuevoPorcentaje] = useState('');
+  const [laborDelDia, setLaborDelDia] = useState('');
+  const [guardandoProgreso, setGuardandoProgreso] = useState(false);
 
   // ESTADOS DEL MÓDULO 2: MATERIALES (Bodega vs Compra Directa)
   const [materialesBodega, setMaterialesBodega] = useState([]);
@@ -66,6 +73,55 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     }
   };
 
+  // 🎛️ NUEVA ACCIÓN: Abrir modal preparando los datos de la etapa seleccionada
+  const abrirEditorEtapa = (etapa) => {
+    setEtapaSeleccionada(etapa);
+    setNuevoPorcentaje(etapa.porcentaje_avance.toString());
+    setLaborDelDia(''); // Siempre inicia limpio para reportar el trabajo de hoy
+    setModalVisible(true);
+  };
+
+  // 🎛️ NUEVA ACCIÓN: Guardar bitácora acumulativa y porcentaje en el backend
+  const guardarCambiosEtapa = async () => {
+    const porcentajeNum = parseInt(nuevoPorcentaje);
+    if (isNaN(porcentajeNum) || porcentajeNum < 0 || porcentajeNum > 100) {
+      Alert.alert("Dato Inválido", "El porcentaje de avance debe ser un número entero entre 0 y 100.");
+      return;
+    }
+
+    try {
+      setGuardandoProgreso(true);
+      // Petición POST al endpoint acumulativo de Django
+      const res = await api.post(`inventario/proyectos/${proyectoSeleccionado.id}/checklist/`, {
+        etapa_id: etapaSeleccionada.id,
+        porcentaje_avance: porcentajeNum,
+        notas_progreso: laborDelDia
+      });
+
+      // Actualizamos el estado local en tiempo real para refrescar la lista de inmediato
+      setChecklist(prevChecklist => 
+        prevChecklist.map(item => 
+          item.id === etapaSeleccionada.id 
+            ? { 
+                ...item, 
+                porcentaje_avance: res.data.nuevo_porcentaje, 
+                notas_progreso: res.data.nuevas_notas, 
+                estado_color: res.data.nuevo_estado_color 
+              }
+            : item
+        )
+      );
+
+      setModalVisible(false);
+      Alert.alert("¡Éxito!", "El reporte de labor diaria y el avance fueron registrados.");
+    } catch (error) {
+      console.error("Error actualizando etapa:", error);
+      Alert.alert("Error", "No se pudieron guardar los cambios en el servidor.");
+    } finally {
+      setGuardandoProgreso(false);
+    }
+  };
+
   // FILTRADOS EN MEMORIA
   const proyectosFiltrados = proyectos.filter(p =>
     p.nombre.toLowerCase().includes(busqueda.toLowerCase())
@@ -96,11 +152,14 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
         <View style={{ flex: 1, paddingLeft: 12 }}>
           <Text style={styles.etapaNombre}>{item.nombre_etapa}</Text>
           <Text style={styles.etapaProgreso}>Progreso: {item.porcentaje_avance}%</Text>
-          {item.notas_progreso ? <Text style={styles.etapaNotas}>📝 {item.notas_progreso}</Text> : null}
+          {item.notas_progreso ? (
+            // Reemplazamos los saltos de línea por barras espaciadoras en la miniatura para que no ocupe tanto espacio vertical
+            <Text style={styles.etapaNotas} numberOfLines={2}>📝 {item.notas_progreso.replace(/\n/g, ' | ')}</Text>
+          ) : null}
         </View>
         <TouchableOpacity 
           style={styles.btnEditar}
-          onPress={() => Alert.alert("Modificar Avance", `Aquí cambiaremos el % de: \n${item.nombre_etapa}`)}
+          onPress={() => abrirEditorEtapa(item)}
         >
           <Text style={{ fontSize: 16 }}>✏️</Text>
         </TouchableOpacity>
@@ -237,6 +296,80 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
           </View>
         )}
 
+        {/* 🪟 VENTANA MODAL INTEGRADA PARA EL REPORTE DIARIO DE LABOR */}
+        <Modal
+          animationType="slide"
+          transparent={true}
+          visible={modalVisible}
+          onRequestClose={() => setModalVisible(false)}
+        >
+          <View style={styles.capaFondoModal}>
+            <View style={styles.contenidoModal}>
+              {etapaSeleccionada && (
+                <View style={{ width: '100%' }}>
+                  <Text style={styles.modalTitulo}>Reportar Labor Diaria</Text>
+                  <Text style={styles.modalSubtitulo}>Etapa: {etapaSeleccionada.nombre_etapa}</Text>
+
+                  {/* Campo Numérico para porcentaje */}
+                  <Text style={styles.modalLabel}>Porcentaje de Avance General (0-100%):</Text>
+                  <TextInput
+                    style={styles.modalInputCorto}
+                    keyboardType="numeric"
+                    maxLength={3}
+                    value={nuevoPorcentaje}
+                    onChangeText={setNuevoPorcentaje}
+                  />
+
+                  {/* Campo de texto multilínea para la labor de la cuadrilla */}
+                  <Text style={styles.modalLabel}>¿Qué labor técnica se realizó hoy?:</Text>
+                  <TextInput
+                    style={styles.modalInputLargo}
+                    multiline={true}
+                    numberOfLines={3}
+                    placeholder="Ej: Se instalaron 20 soportes en ele y 5 rieles."
+                    placeholderTextColor="#999"
+                    value={laborDelDia}
+                    onChangeText={setLaborDelDia}
+                  />
+
+                  {/* Historial acumulado en scrollview interno para no estorbar la pantalla */}
+                  {etapaSeleccionada.notes_progreso || etapaSeleccionada.notas_progreso ? (
+                    <View style={styles.contenedorHistorial}>
+                      <Text style={styles.labelHistorial}>Historial de Labores Anteriores:</Text>
+                      <ScrollView style={{ maxHeight: 100 }}>
+                        <Text style={styles.textoHistorial}>
+                          {etapaSeleccionada.notas_progreso || etapaSeleccionada.notes_progreso}
+                        </Text>
+                      </ScrollView>
+                    </View>
+                  ) : null}
+
+                  {/* Botonera inferior de control */}
+                  <View style={styles.modalBotonera}>
+                    <TouchableOpacity 
+                      style={[styles.modalBtn, styles.modalBtnCancelar]} 
+                      onPress={() => setModalVisible(false)}
+                      disabled={guardandoProgreso}
+                    >
+                      <Text style={styles.btnTextoBlanco}>Cancelar</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity 
+                      style={[styles.modalBtn, styles.modalBtnGuardar]} 
+                      onPress={guardarCambiosEtapa}
+                      disabled={guardandoProgreso}
+                    >
+                      <Text style={styles.btnTextoBlanco}>
+                        {guardandoProgreso ? "Guardando..." : "Guardar Reporte"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+            </View>
+          </View>
+        </Modal>
+
         <TouchableOpacity 
           style={styles.btnVolver} 
           onPress={() => {
@@ -294,21 +427,18 @@ const styles = StyleSheet.create({
   headerSub: { fontSize: 11, fontWeight: 'bold', color: '#E67E22', textTransform: 'uppercase' },
   headerTitle: { fontSize: 17, fontWeight: 'bold', color: '#D35400', marginTop: 2 },
 
-  // Estilos de las pestañas principales
   pestanasPrincipales: { flexDirection: 'row', borderBottomWidth: 2, borderBottomColor: '#ECEFF1', marginBottom: 15 },
   tabPrincipal: { flex: 1, paddingVertical: 12, alignItems: 'center', borderBottomWidth: 3, borderBottomColor: 'transparent' },
   tabPrincipalActiva: { borderBottomColor: '#87C442' },
   tabPrincipalTexto: { fontSize: 14, fontWeight: '600', color: '#78909C' },
   tabPrincipalTextoActivo: { color: '#87C442', fontWeight: 'bold' },
 
-  // Estilos de las sub-pestañas de materiales
   subPasosContainer: { flexDirection: 'row', backgroundColor: '#ECEFF1', padding: 4, borderRadius: 10, marginBottom: 15 },
   subPasoBoton: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
   subPasoBotonActivo: { backgroundColor: '#FFF', elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 2 },
   subPasoTexto: { fontSize: 13, fontWeight: '600', color: '#78909C' },
   subPasoTextoActivo: { color: '#2196F3', fontWeight: 'bold' },
 
-  // Filas del checklist
   filaEtapa: { flexDirection: 'row', backgroundColor: '#F8F9FA', padding: 14, borderRadius: 10, marginBottom: 8, borderWidth: 1, borderColor: '#E1E5EB', alignItems: 'center' },
   barraColor: { width: 6, height: '100%', minHeight: 45, borderRadius: 3 },
   etapaNombre: { fontSize: 14, fontWeight: '600', color: '#2D2E31' },
@@ -316,12 +446,30 @@ const styles = StyleSheet.create({
   etapaNotas: { fontSize: 11, color: '#546E7A', fontStyle: 'italic', marginTop: 4 },
   btnEditar: { padding: 10, backgroundColor: '#FFF', borderRadius: 8, borderWidth: 1, borderColor: '#CFD8DC', marginLeft: 10 },
 
-  // Filas de materiales utilizados
   materialFila: { flexDirection: 'row', backgroundColor: '#FFF', padding: 14, borderRadius: 10, marginBottom: 8, borderWidth: 1, borderColor: '#EAEAEA', alignItems: 'center', justifyContent: 'space-between' },
   materialNombre: { fontSize: 15, fontWeight: '600', color: '#2D2E31' },
   materialUnidad: { fontSize: 12, color: '#7A7B80', marginTop: 2 },
   badgeCantidad: { backgroundColor: '#87C442', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
   badgeTexto: { color: '#FFF', fontSize: 14, fontWeight: 'bold' },
+
+  // 🎛️ ESTILOS EXCLUSIVOS DE LA VENTANA MODAL (Agregados limpiamente al final)
+  capaFondoModal: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 20 },
+  contenidoModal: { width: '100%', backgroundColor: '#FFF', borderRadius: 16, padding: 20, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
+  modalTitulo: { fontSize: 18, fontWeight: 'bold', color: '#2D2E31', marginBottom: 5 },
+  modalSubtitulo: { fontSize: 14, fontWeight: '600', color: '#F39C12', marginBottom: 15 },
+  modalLabel: { fontSize: 13, fontWeight: '700', color: '#546E7A', marginBottom: 6, marginTop: 10 },
+  modalInputCorto: { width: 80, backgroundColor: '#F1F3F5', borderWidth: 1, borderColor: '#CFD8DC', borderRadius: 8, padding: 8, fontSize: 16, textAlign: 'center', color: '#333' },
+  modalInputLargo: { width: '100%', backgroundColor: '#F1F3F5', borderWidth: 1, borderColor: '#CFD8DC', borderRadius: 8, padding: 12, fontSize: 14, color: '#333', textAlignVertical: 'top' },
+  
+  contenedorHistorial: { width: '100%', backgroundColor: '#ECEFF1', borderRadius: 8, padding: 10, marginTop: 15, borderWidth: 1, borderColor: '#CFD8DC' },
+  labelHistorial: { fontSize: 11, fontWeight: 'bold', color: '#78909C', marginBottom: 4, textTransform: 'uppercase' },
+  textoHistorial: { fontSize: 12, color: '#455A64', lineHeight: 16 },
+
+  modalBotonera: { flexDirection: 'row', marginTop: 20, width: '100%', gap: 10 },
+  modalBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  modalBtnCancelar: { backgroundColor: '#90A4AE' },
+  modalBtnGuardar: { backgroundColor: '#87C442' },
+  btnTextoBlanco: { color: '#FFF', fontSize: 14, fontWeight: 'bold' },
 
   textoVacio: { fontSize: 14, color: '#7A7B80', textAlign: 'center', marginTop: 20, paddingHorizontal: 10 },
   btnVolver: { backgroundColor: '#495057', paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginTop: 10, marginBottom: 20 },

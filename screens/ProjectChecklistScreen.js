@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, Alert, Modal, ScrollView } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, TextInput, Alert, Modal, ScrollView } from 'react-native';
 import api from '../api';
 import EmpresaLoader from './EmpresaLoader';
 
@@ -22,6 +23,13 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
   const [nuevoPorcentaje, setNuevoPorcentaje] = useState('');
   const [laborDelDia, setLaborDelDia] = useState('');
   const [guardandoProgreso, setGuardandoProgreso] = useState(false);
+
+  // 📸 ESTADO PARA ALMACENAR LA FOTO SELECCIONADA
+  const [foto, setFoto] = useState(null);
+
+  // 👁️ NUEVOS ESTADOS SEGUROS PARA EL VISUALIZADOR DE REPORTES GUARDADOS
+  const [modalVerReporteVisible, setModalVerReporteVisible] = useState(false);
+  const [etapaVerReporte, setEtapaVerReporte] = useState(null);
 
   // ESTADOS DEL MÓDULO 2: MATERIALES (Bodega vs Compra Directa)
   const [materialesBodega, setMaterialesBodega] = useState([]);
@@ -78,10 +86,56 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     setEtapaSeleccionada(etapa);
     setNuevoPorcentaje(etapa.porcentaje_avance.toString());
     setLaborDelDia(''); // Siempre inicia limpio para reportar el trabajo de hoy
+    setFoto(null);      // Limpia la foto anterior para el nuevo reporte
     setModalVisible(true);
   };
 
-  // 🎛️ NUEVA ACCIÓN: Guardar bitácora acumulativa y porcentaje en el backend
+  // 👁️ NUEVA ACCIÓN: Abrir modal para ver los datos del último reporte guardado
+  const abrirVisualizadorReporte = (etapa) => {
+    setEtapaVerReporte(etapa);
+    setModalVerReporteVisible(true);
+  };
+
+  // 📸 ACCONES MULTIMEDIA: CAMARA Y GALERÍA NATIVA
+  const tomarFoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permiso requerido', 'Necesitamos acceso a la cámara para capturar la evidencia.');
+      return;
+    }
+
+    let result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.7,
+    });
+
+    if (!result.canceled) {
+      setFoto(result.assets[0].uri);
+    }
+  };
+
+  const seleccionarDeGaleria = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permiso requerido', 'Necesitamos acceso a la galería para seleccionar imágenes.');
+      return;
+    }
+
+    let result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.7,
+    });
+
+    if (!result.canceled) {
+      setFoto(result.assets[0].uri);
+    }
+  };
+
+  // 🎛️ NUEVA ACCIÓN: Guardar bitácora acumulativa y porcentaje en el backend (Modificado para Multimedia)
   const guardarCambiosEtapa = async () => {
     const porcentajeNum = parseInt(nuevoPorcentaje);
     if (isNaN(porcentajeNum) || porcentajeNum < 0 || porcentajeNum > 100) {
@@ -91,31 +145,45 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
 
     try {
       setGuardandoProgreso(true);
-      // Petición POST al endpoint acumulativo de Django
-      const res = await api.post(`inventario/proyectos/${proyectoSeleccionado.id}/checklist/`, {
-        etapa_id: etapaSeleccionada.id,
-        porcentaje_avance: porcentajeNum,
-        notas_progreso: laborDelDia
-      });
 
-      // Actualizamos el estado local en tiempo real para refrescar la lista de inmediato
-      setChecklist(prevChecklist => 
-        prevChecklist.map(item => 
-          item.id === etapaSeleccionada.id 
-            ? { 
-                ...item, 
-                porcentaje_avance: res.data.nuevo_porcentaje, 
-                notas_progreso: res.data.nuevas_notas, 
-                estado_color: res.data.nuevo_estado_color 
-              }
-            : item
-        )
+      // Usamos FormData obligatorio para transportar archivos binarios al Backend
+      const formData = new FormData();
+      formData.append('etapa_id', etapaSeleccionada.id);
+      formData.append('porcentaje_avance', porcentajeNum);
+      formData.append('notes_progreso', laborDelDia); // Mantenemos compatibilidad con tu backend
+      formData.append('notas_progreso', laborDelDia);
+
+      // Si el técnico capturó una foto, la empaquetamos correctamente
+      if (foto) {
+        const filename = foto.split('/').pop();
+        const match = /\.(\w+)$/.exec(filename);
+        const type = match ? `image/${match[1]}` : `image`;
+
+        formData.append('foto', {
+          uri: foto,
+          name: filename,
+          type: type,
+        });
+      }
+
+      // Envío multipart/form-data a la API
+      const res = await api.post(
+        `inventario/proyectos/${proyectoSeleccionado.id}/checklist/`, 
+        formData,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        }
       );
 
+      // Invocamos una consulta directa de refresco al servidor para traer las URLs de archivos recién creadas
+      const resChecklist = await api.get(`inventario/proyectos/${proyectoSeleccionado.id}/checklist/`);
+      setChecklist(resChecklist.data.checklist || []);
+
       setModalVisible(false);
-      Alert.alert("¡Éxito!", "El reporte de labor diaria y el avance fueron registrados.");
+      setFoto(null); // Reseteo preventivo seguro
+      Alert.alert("¡Éxito!", "El reporte de labor diaria y la evidencia multimedia fueron registrados.");
     } catch (error) {
-      console.error("Error actualizando etapa:", error);
+      console.error("Error actualizando etapa con foto:", error);
       Alert.alert("Error", "No se pudieron guardar los cambios en el servidor.");
     } finally {
       setGuardandoProgreso(false);
@@ -147,15 +215,17 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     if (item.estado_color === 'NARANJA') colorIndicador = '#FF9800';
 
     return (
-      <View style={styles.filaEtapa}>
+      // 👁️ Enlazamos la tarjeta completa a la visualización del último reporte guardado
+      <TouchableOpacity style={styles.filaEtapa} onPress={() => abrirVisualizadorReporte(item)}>
         <View style={[styles.barraColor, { backgroundColor: colorIndicador }]} />
         <View style={{ flex: 1, paddingLeft: 12 }}>
           <Text style={styles.etapaNombre}>{item.nombre_etapa}</Text>
           <Text style={styles.etapaProgreso}>Progreso: {item.porcentaje_avance}%</Text>
           {item.notas_progreso ? (
-            // Reemplazamos los saltos de línea por barras espaciadoras en la miniatura para que no ocupe tanto espacio vertical
             <Text style={styles.etapaNotas} numberOfLines={2}>📝 {item.notas_progreso.replace(/\n/g, ' | ')}</Text>
-          ) : null}
+          ) : (
+            <Text style={[styles.etapaNotas, { color: '#AAA', fontStyle: 'italic' }]}>Sin reportes previos. Toca para ver.</Text>
+          )}
         </View>
         <TouchableOpacity 
           style={styles.btnEditar}
@@ -163,7 +233,7 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
         >
           <Text style={{ fontSize: 16 }}>✏️</Text>
         </TouchableOpacity>
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -306,7 +376,7 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
           <View style={styles.capaFondoModal}>
             <View style={styles.contenidoModal}>
               {etapaSeleccionada && (
-                <View style={{ width: '100%' }}>
+                <ScrollView style={{ width: '100%' }} showsVerticalScrollIndicator={false}>
                   <Text style={styles.modalTitulo}>Reportar Labor Diaria</Text>
                   <Text style={styles.modalSubtitulo}>Etapa: {etapaSeleccionada.nombre_etapa}</Text>
 
@@ -332,15 +402,33 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
                     onChangeText={setLaborDelDia}
                   />
 
+                  {/* 📸 SECCIÓN ADICIONADA: ADJUNTAR EVIDENCIA FOTOGRÁFICA */}
+                  <Text style={styles.modalLabel}>Evidencia Fotográfica de Obra:</Text>
+                  <View style={styles.camaraBotonera}>
+                    <TouchableOpacity onPress={tomarFoto} style={styles.btnCamaraAccion}>
+                      <Text style={styles.btnCamaraTexto}>📸 Cámara</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={seleccionarDeGaleria} style={[styles.btnCamaraAccion, { backgroundColor: '#546E7A' }]}>
+                      <Text style={styles.btnCamaraTexto}>🖼️ Galería</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {foto && (
+                    <View style={styles.contenedorPreview}>
+                      <Image source={{ uri: foto }} style={styles.fotoPreview} />
+                      <TouchableOpacity onPress={() => setFoto(null)} style={styles.btnBorrarFoto}>
+                        <Text style={{ color: '#FFF', fontWeight: 'bold', fontSize: 12 }}>Quitar Foto ❌</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
                   {/* Historial acumulado en scrollview interno para no estorbar la pantalla */}
                   {etapaSeleccionada.notes_progreso || etapaSeleccionada.notas_progreso ? (
                     <View style={styles.contenedorHistorial}>
-                      <Text style={styles.labelHistorial}>Historial de Labores Anteriores:</Text>
-                      <ScrollView style={{ maxHeight: 100 }}>
-                        <Text style={styles.textoHistorial}>
-                          {etapaSeleccionada.notas_progreso || etapaSeleccionada.notes_progreso}
-                        </Text>
-                      </ScrollView>
+                      <Text style={styles.labelHistorial}>Último Historial Registrado:</Text>
+                      <Text style={styles.textoHistorial}>
+                        {etapaSeleccionada.notas_progreso || etapaSeleccionada.notes_progreso}
+                      </Text>
                     </View>
                   ) : null}
 
@@ -351,7 +439,7 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
                       onPress={() => setModalVisible(false)}
                       disabled={guardandoProgreso}
                     >
-                      <Text style={styles.btnTextoBlanco}>Cancelar</Text>
+                      <Text style={styles.btnTextoBlanco}>Cancelación</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity 
@@ -364,7 +452,59 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
                       </Text>
                     </TouchableOpacity>
                   </View>
-                </View>
+                </ScrollView>
+              )}
+            </View>
+          </View>
+        </Modal>
+
+        {/* 👁️ NUEVA VENTANA MODAL INTEGRADA PARA VISUALIZAR EL REPORTE REAL (AL TOCAR LA TARJETA) */}
+        <Modal
+          animationType="fade"
+          transparent={true}
+          visible={modalVerReporteVisible}
+          onRequestClose={() => setModalVerReporteVisible(false)}
+        >
+          <View style={styles.capaFondoModal}>
+            <View style={styles.contenidoModal}>
+              {etapaVerReporte && (
+                <ScrollView style={{ width: '100%' }} showsVerticalScrollIndicator={false}>
+                  <Text style={styles.modalTitulo}>Detalle de Avance Guardado</Text>
+                  <Text style={[styles.modalSubtitulo, { color: '#0284c7' }]}>Etapa: {etapaVerReporte.nombre_etapa}</Text>
+
+                  <View style={styles.contenedorDetalleInfo}>
+                    <Text style={styles.modalLabel}>Progreso Actualizado en Obra:</Text>
+                    <Text style={styles.textoDestacadoProgreso}>{etapaVerReporte.porcentaje_avance}% Completado</Text>
+
+                    <Text style={styles.modalLabel}>Última Labor Técnica Registrada:</Text>
+                    <View style={styles.cajaNotasGuardadas}>
+                      <Text style={styles.textoNotasGuardadas}>
+                        {etapaVerReporte.notas_progreso ? etapaVerReporte.notas_progreso : "No se registraron comentarios escritos en esta bitácora."}
+                      </Text>
+                    </View>
+
+                    <Text style={styles.modalLabel}>Evidencia Multimedia en Servidor:</Text>
+                    {etapaVerReporte.foto_evidencia_url ? (
+                      <Image 
+                        source={{ uri: etapaVerReporte.foto_evidencia_url }} 
+                        style={styles.fotoEvidenciaBackend} 
+                      />
+                    ) : (
+                      <View style={styles.sinFotoContenedor}>
+                        <Text style={{ color: '#78909C', fontSize: 13, fontWeight: '500' }}>⚠️ No hay registros fotográficos adjuntos.</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={{ marginTop: 25 }}>
+                    <TouchableOpacity 
+                      style={[styles.modalBtn, { backgroundColor: '#455A64', width: '100%' }]} 
+                      onPress={() => setModalVerReporteVisible(false)}
+                    >
+                      <Text style={styles.btnTextoBlanco}>Cerrar Vista</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
               )}
             </View>
           </View>
@@ -452,20 +592,34 @@ const styles = StyleSheet.create({
   badgeCantidad: { backgroundColor: '#87C442', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
   badgeTexto: { color: '#FFF', fontSize: 14, fontWeight: 'bold' },
 
-  // 🎛️ ESTILOS EXCLUSIVOS DE LA VENTANA MODAL (Agregados limpiamente al final)
-  capaFondoModal: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 20 },
-  contenidoModal: { width: '100%', backgroundColor: '#FFF', borderRadius: 16, padding: 20, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
-  modalTitulo: { fontSize: 18, fontWeight: 'bold', color: '#2D2E31', marginBottom: 5 },
-  modalSubtitulo: { fontSize: 14, fontWeight: '600', color: '#F39C12', marginBottom: 15 },
-  modalLabel: { fontSize: 13, fontWeight: '700', color: '#546E7A', marginBottom: 6, marginTop: 10 },
+  capaFondoModal: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 20, paddingVertical: 30 },
+  contenidoModal: { width: '100%', maxHeight: '90%', backgroundColor: '#FFF', borderRadius: 16, padding: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
+  modalTitulo: { fontSize: 18, fontWeight: 'bold', color: '#2D2E31', marginBottom: 5, textAlign: 'center' },
+  modalSubtitulo: { fontSize: 14, fontWeight: '600', color: '#F39C12', marginBottom: 15, textAlign: 'center' },
+  modalLabel: { fontSize: 13, fontWeight: '700', color: '#546E7A', marginBottom: 6, marginTop: 12 },
   modalInputCorto: { width: 80, backgroundColor: '#F1F3F5', borderWidth: 1, borderColor: '#CFD8DC', borderRadius: 8, padding: 8, fontSize: 16, textAlign: 'center', color: '#333' },
   modalInputLargo: { width: '100%', backgroundColor: '#F1F3F5', borderWidth: 1, borderColor: '#CFD8DC', borderRadius: 8, padding: 12, fontSize: 14, color: '#333', textAlignVertical: 'top' },
   
+  camaraBotonera: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginBottom: 10 },
+  btnCamaraAccion: { backgroundColor: '#0284c7', paddingVertical: 10, paddingHorizontal: 15, borderRadius: 8, flex: 0.48, alignItems: 'center' },
+  btnCamaraTexto: { color: '#FFF', fontWeight: 'bold', fontSize: 13 },
+  contenedorPreview: { width: '100%', alignItems: 'center', marginVertical: 10 },
+  fotoPreview: { width: '100%', height: 160, borderRadius: 8, resizeMode: 'cover' },
+  btnBorrarFoto: { backgroundColor: '#ef4444', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 5, marginTop: 6 },
+
   contenedorHistorial: { width: '100%', backgroundColor: '#ECEFF1', borderRadius: 8, padding: 10, marginTop: 15, borderWidth: 1, borderColor: '#CFD8DC' },
   labelHistorial: { fontSize: 11, fontWeight: 'bold', color: '#78909C', marginBottom: 4, textTransform: 'uppercase' },
   textoHistorial: { fontSize: 12, color: '#455A64', lineHeight: 16 },
 
-  modalBotonera: { flexDirection: 'row', marginTop: 20, width: '100%', gap: 10 },
+  // 👁️ ESTILOS ADICIONADOS PARA EL VISUALIZADOR DE REPORTES GUARDADOS
+  contenedorDetalleInfo: { width: '100%', marginTop: 5 },
+  textoDestacadoProgreso: { fontSize: 18, fontWeight: 'bold', color: '#87C442', marginVertical: 6 },
+  cajaNotasGuardadas: { width: '100%', backgroundColor: '#F8F9FA', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#E1E5EB' },
+  textoNotasGuardadas: { fontSize: 14, color: '#333', lineHeight: 20 },
+  fotoEvidenciaBackend: { width: '100%', height: 210, borderRadius: 10, marginTop: 10, resizeMode: 'cover', borderWidth: 1, borderColor: '#CFD8DC' },
+  sinFotoContenedor: { width: '100%', backgroundColor: '#F1F3F5', padding: 16, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#CFD8DC', borderStyle: 'dashed' },
+
+  modalBotonera: { flexDirection: 'row', marginTop: 20, width: '100%', gap: 10, marginBottom: 10 },
   modalBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   modalBtnCancelar: { backgroundColor: '#90A4AE' },
   modalBtnGuardar: { backgroundColor: '#87C442' },

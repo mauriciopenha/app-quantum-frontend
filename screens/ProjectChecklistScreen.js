@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, TextInput, Alert, Modal, ScrollView } from 'react-native';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, TextInput, Alert, Modal, ScrollView, Dimensions } from 'react-native';
 import api from '../api';
 import EmpresaLoader from './EmpresaLoader';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function ProjectChecklistScreen({ token, onVolver }) {
   const [cargando, setCargando] = useState(true);
@@ -20,21 +23,22 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
 
   // 📂 CONTROL DE ARCHIVOS SELECCIONADOS
   const [etapaHistorialSeleccionada, setEtapaHistorialSeleccionada] = useState(null);
-  const [verInformeGeneralActivo, setVerInformeGeneralActivo] = useState(false); // Flag para la super-tarjeta
+  const [verInformeGeneralActivo, setVerInformeGeneralActivo] = useState(false); 
 
-  // ESTADOS DE EDICIÓN (MÓDULO DE REPORTE DIARIO - EL LAPICITO)
+  // ESTADOS DE EDICIÓN (MÓDULO DE REPORTE DIARIO)
   const [modalVisible, setModalVisible] = useState(false);
   const [etapaSeleccionada, setEtapaSeleccionada] = useState(null);
   const [nuevoPorcentaje, setNuevoPorcentaje] = useState('');
   const [laborDelDia, setLaborDelDia] = useState('');
   const [guardandoProgreso, setGuardandoProgreso] = useState(false);
 
-  // 📸 IMAGEN SELECCIONADA
-  const [foto, setFoto] = useState(null);
+  // 📸 ARRAY DE FOTOS SELECCIONADAS (Soporta múltiples imágenes para el carrusel)
+  const [listaFotos, setListaFotos] = useState([]);
 
   // 👁️ MODAL FINAL DE VISUALIZACIÓN
   const [modalVerReporteVisible, setModalVerReporteVisible] = useState(false);
   const [reporteDiaSeleccionado, setReporteDiaSeleccionado] = useState(null);
+  const [indiceCarruselActivo, setIndiceCarruselActivo] = useState(0);
 
   // ESTADOS DEL MÓDULO 2: MATERIALES
   const [materialesBodega, setMaterialesBodega] = useState([]);
@@ -69,7 +73,7 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
       setOrigenMaterial('BODEGA');     
       setBusquedaMaterial('');         
       setEtapaHistorialSeleccionada(null); 
-      setVerInformeGeneralActivo(false); // Iniciar sin el informe general expandido
+      setVerInformeGeneralActivo(false); 
       
       const [resChecklist, resMateriales] = await Promise.all([
         api.get(`inventario/proyectos/${proyecto.id}/checklist/`),
@@ -88,7 +92,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     }
   };
 
-  // 🎛️ REFRESCAR DATOS EN SILENCIO
   const refrescarChecklistSilencioso = async () => {
     try {
       const resChecklist = await api.get(`inventario/proyectos/${proyectoSeleccionado.id}/checklist/`);
@@ -111,66 +114,105 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     setEtapaSeleccionada(etapa);
     setNuevoPorcentaje(etapa.porcentaje_avance.toString());
     setLaborDelDia(''); 
-    setFoto(null);      
+    setListaFotos([]); // Limpiamos la ráfaga anterior
     setModalVisible(true);
   };
 
   const abrirVisualizadorReporteDia = (reporte) => {
     setReporteDiaSeleccionado(reporte);
+    setIndiceCarruselActivo(0);
     setModalVerReporteVisible(true);
   };
 
-  // 📸 ACCONES MULTIMEDIA
+  // 📸 ACCIONES MULTIMEDIA OPTIMIZADAS (Sin recorte forzado y con almacenamiento múltiple)
   const tomarFoto = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== 'granted') return Alert.alert('Permiso requerido', 'Acceso denegado a cámara.');
-    let result = await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [4, 3], quality: 0.7 });
-    if (!result.canceled) setFoto(result.assets[0].uri);
+    
+    // 🔥 ELIMINADO: allowsEditing y aspect para conservar la imagen completa de los paneles solares
+    let result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: false, 
+      quality: 0.8
+    });
+    
+    if (!result.canceled) {
+      setListaFotos(prev => [...prev, result.assets[0].uri]);
+    }
   };
 
   const seleccionarDeGaleria = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') return Alert.alert('Permiso requerido', 'Acceso denegado a galería.');
-    let result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [4, 3], quality: 0.7 });
-    if (!result.canceled) setFoto(result.assets[0].uri);
+    
+    let result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: false, // Sin recorte forzado
+      allowsMultipleSelection: true, // Habilita la selección de varias fotos juntas si se desea
+      quality: 0.8
+    });
+    
+    if (!result.canceled) {
+      const uris = result.assets.map(asset => asset.uri);
+      setListaFotos(prev => [...prev, ...uris]);
+    }
+  };
+
+  const quitarFotoDeLista = (indexQuitar) => {
+    setListaFotos(prev => prev.filter((_, index) => index !== indexQuitar));
   };
 
   const guardarCambiosEtapa = async () => {
-    const porcentajeNum = parseInt(nuevoPorcentaje);
-    if (isNaN(porcentajeNum) || porcentajeNum < 0 || porcentajeNum > 100) {
-      Alert.alert("Dato Inválido", "El porcentaje debe ser de 0 a 100.");
-      return;
-    }
+  const porcentajeNum = parseInt(nuevoPorcentaje);
+  if (isNaN(porcentajeNum) || porcentajeNum < 0 || porcentajeNum > 100) {
+    Alert.alert("Dato Inválido", "El porcentaje debe ser de 0 a 100.");
+    return;
+  }
 
-    try {
-      setGuardandoProgreso(true);
-      const formData = new FormData();
-      formData.append('etapa_id', etapaSeleccionada.id);
-      formData.append('porcentaje_avance', porcentajeNum);
-      formData.append('notes_progreso', laborDelDia);
-      formData.append('notas_progreso', laborDelDia);
+  try {
+    setGuardandoProgreso(true);
+    const formData = new FormData();
+    formData.append('etapa_id', etapaSeleccionada.id);
+    formData.append('porcentaje_avance', porcentajeNum);
+    formData.append('notes_progreso', laborDelDia);
+    formData.append('notas_progreso', laborDelDia);
 
-      if (foto) {
-        const filename = foto.split('/').pop();
-        const match = /\.(\w+)$/.exec(filename);
-        const type = match ? `image/${match[1]}` : `image`;
-        formData.append('foto', { uri: foto, name: filename, type: type });
-      }
+    // 🔥 PROCESAMIENTO PROFESIONAL DE MÚLTIPLES FOTOS (CÁMARA O GALERÍA)
+    if (listaFotos && listaFotos.length > 0) {
+      listaFotos.forEach((uri, index) => {
+        // Extraer el nombre del archivo y su extensión de forma segura
+        const filename = uri.split('/').pop();
+        const match = /\.(\w+)$/.exec(filename || '');
+        const type = match ? `image/${match[1]}` : `image/jpeg`;
 
-      await api.post(`inventario/proyectos/${proyectoSeleccionado.id}/checklist/`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+        // 💡 CLAVE: Usamos 'foto' repetidas veces. Django .getlist('foto') capturará todas.
+        formData.append('foto', {
+          uri: uri,
+          name: filename || `evidencia_${index}.jpg`,
+          type: type
+        });
       });
-
-      await refrescarChecklistSilencioso();
-      setModalVisible(false);
-      setFoto(null);
-      Alert.alert("¡Éxito!", "Reporte del día guardado.");
-    } catch (error) {
-      console.error("Error guardando etapa:", error);
-    } finally {
-      setGuardandoProgreso(false);
+      console.log(`Empaquetadas ${listaFotos.length} fotos en el FormData.`);
+    } else {
+      console.log("No se seleccionaron fotos para este reporte.");
     }
-  };
+
+    // Envío limpio al Backend
+    await api.post(`inventario/proyectos/${proyectoSeleccionado.id}/checklist/`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+
+    await refrescarChecklistSilencioso();
+    setModalVisible(false);
+    setListaFotos([]);
+    Alert.alert("¡Éxito!", "Reporte diario transmitido correctamente.");
+  } catch (error) {
+    console.error("Error guardando etapa:", error);
+    Alert.alert("Error", "No se pudo transmitir el reporte al servidor.");
+  } finally {
+    setGuardandoProgreso(false);
+  }
+};
 
   const proyectosFiltrados = proyectos.filter(p => p.nombre.toLowerCase().includes(busqueda.toLowerCase()));
   const materialesFiltrados = (origenMaterial === 'BODEGA' ? materialesBodega : materialesCompra).filter(mat => 
@@ -204,7 +246,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     );
   };
 
-  // RENDER INTERNO: TARJETAS DEL HISTORIAL DE UNA ETAPA
   const renderItemDiaHistorial = ({ item }) => (
     <TouchableOpacity style={styles.cardDiaHistorial} onPress={() => abrirVisualizadorReporteDia(item)}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -218,7 +259,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     </TouchableOpacity>
   );
 
-  // RENDER INTERNO: TARJETAS DEL INFORME GENERAL UNIFICADO (CRONOLÓGICO TOTAL)
   const renderItemDiaInformeGeneral = ({ item }) => (
     <TouchableOpacity style={[styles.cardDiaHistorial, { borderLeftWidth: 4, borderLeftColor: '#3B82F6' }]} onPress={() => abrirVisualizadorReporteDia(item)}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -227,7 +267,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
           <Text style={[styles.textoBadgeDia, { color: '#1D4ED8' }]}>{item.porcentaje_al_momento}%</Text>
         </View>
       </View>
-      {/* Indicador de qué etapa proviene */}
       <Text style={styles.tagEtapaInformeGeneral}>Etapa afectada: {item.nombre_etapa}</Text>
       <Text style={styles.resumenLaborDia} numberOfLines={2}>{item.nota_labor}</Text>
       <Text style={styles.linkVerMasModal}>Ver reporte e imágenes completo →</Text>
@@ -246,6 +285,13 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     </View>
   );
 
+  // Manejador del scroll del carrusel para actualizar los puntitos indicadores
+  const handleScrollCarrusel = (event) => {
+    const posicionX = event.nativeEvent.contentOffset.x;
+    const indice = Math.round(posicionX / (SCREEN_WIDTH - 80)); // Ajustado al tamaño interno del contenedor modal
+    setIndiceCarruselActivo(indice);
+  };
+
   if (cargando && proyectos.length === 0) {
     return (
       <View style={styles.centro}>
@@ -255,7 +301,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     );
   }
 
-  // 🚧 VISTA B: DETALLE DEL PROYECTO
   if (proyectoSeleccionado) {
     return (
       <View style={styles.container}>
@@ -265,7 +310,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
           <Text style={styles.headerTitle}>🏗️ {proyectoSeleccionado.nombre}</Text>
         </View>
 
-        {/* SUB-VISTA: EXPANDIR ARCHIVO DE UNA ETAPA ESPECÍFICA */}
         {etapaHistorialSeleccionada && (
           <View style={{ flex: 1 }}>
             <View style={styles.headerArchivoEtapa}>
@@ -279,7 +323,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
           </View>
         )}
 
-        {/* 📚 NUEVA SUB-VISTA: EXPANDIR INFORME GENERAL UNIFICADO CRONOLÓGICO */}
         {verInformeGeneralActivo && (
           <View style={{ flex: 1 }}>
             <View style={[styles.headerArchivoEtapa, { backgroundColor: '#EEF2F6', borderColor: '#CBD5E1' }]}>
@@ -301,7 +344,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
           </View>
         )}
 
-        {/* SECCIÓN NORMAL: PESTAÑAS (CUANDO NINGÚN ARCHIVO ESTÁ ABIERTO) */}
         {!etapaHistorialSeleccionada && !verInformeGeneralActivo && (
           <View style={{ flex: 1 }}>
             <View style={styles.pestanasPrincipales}>
@@ -319,12 +361,7 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
               <View style={{ flex: 1 }}>
                 {pestanaActiva === 'AVANCE' && (
                   <View style={{ flex: 1 }}>
-                    
-                    {/* 🚀 SUPER-TARJETA DESTACADA: INFORME GENERAL UNIFICADO */}
-                    <TouchableOpacity 
-                      style={styles.cardInformeGeneralUnificado} 
-                      onPress={() => setVerInformeGeneralActivo(true)}
-                    >
+                    <TouchableOpacity style={styles.cardInformeGeneralUnificado} onPress={() => setVerInformeGeneralActivo(true)}>
                       <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                         <Text style={{ fontSize: 24, marginRight: 12 }}>🗃️</Text>
                         <View style={{ flex: 1 }}>
@@ -334,7 +371,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
                         <Text style={{ fontSize: 18, color: '#1E3A8A', fontWeight: 'bold' }}>→</Text>
                       </View>
                     </TouchableOpacity>
-
                     <FlatList data={checklist} keyExtractor={(item) => item.id.toString()} renderItem={renderItemEtapa} contentContainerStyle={{ paddingBottom: 15 }} />
                   </View>
                 )}
@@ -349,7 +385,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
                         <Text style={[styles.subPasoTexto, origenMaterial === 'COMPRA' && styles.subPasoTextoActivo]}>🛒 Compra Directa</Text>
                       </TouchableOpacity>
                     </View>
-
                     <TextInput style={styles.buscador} placeholder="🔍 Buscar material..." placeholderTextColor="#9E9E9E" value={busquedaMaterial} onChangeText={setBusquedaMaterial} />
                     <FlatList data={materialesFiltrados} keyExtractor={(item) => item.id.toString()} renderItem={renderFilaMaterial} contentContainerStyle={{ paddingBottom: 15 }} />
                   </View>
@@ -363,7 +398,7 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
           </View>
         )}
 
-        {/* 🪟 MODAL A: CREACIÓN / REPORTE DE LABOR DIARIA (EL LAPICITO) */}
+        {/* 🪟 MODAL A: REPORTAR LABOR DIARIA (MÚLTIPLES FOTOS HORIZONTALES) */}
         <Modal animationType="slide" transparent={true} visible={modalVisible} onRequestClose={() => setModalVisible(false)}>
           <View style={styles.capaFondoModal}>
             <View style={styles.contenidoModal}>
@@ -371,21 +406,37 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
                 <ScrollView style={{ width: '100%' }} showsVerticalScrollIndicator={false}>
                   <Text style={styles.modalTitulo}>Reportar Labor Diaria</Text>
                   <Text style={styles.modalSubtitulo}>Etapa: {etapaSeleccionada.nombre_etapa}</Text>
+                  
                   <Text style={styles.modalLabel}>Porcentaje de Avance General (0-100%):</Text>
                   <TextInput style={styles.modalInputCorto} keyboardType="numeric" maxLength={3} value={nuevoPorcentaje} onChangeText={setNuevoPorcentaje} />
+                  
                   <Text style={styles.modalLabel}>¿Qué labor técnica se realizó hoy?:</Text>
-                  <TextInput style={styles.modalInputLargo} multiline={true} numberOfLines={3} placeholder="Ej: Se instalaron soportes y rieles." placeholderTextColor="#999" value={laborDelDia} onChangeText={setLaborDelDia} />
-                  <Text style={styles.modalLabel}>Evidencia Fotográfica de Obra:</Text>
+                  <TextInput style={styles.modalInputLargo} multiline={true} numberOfLines={3} placeholder="Ej: Se instalaron soportes y rieles sin cortes estructurales." placeholderTextColor="#999" value={laborDelDia} onChangeText={setLaborDelDia} />
+                  
+                  <Text style={styles.modalLabel}>Evidencias Fotográficas (¡Puedes tomar varias!):</Text>
                   <View style={styles.camaraBotonera}>
-                    <TouchableOpacity onPress={tomarFoto} style={styles.btnCamaraAccion}><Text style={styles.btnCamaraTexto}>📸 Cámara</Text></TouchableOpacity>
-                    <TouchableOpacity onPress={seleccionarDeGaleria} style={[styles.btnCamaraAccion, { backgroundColor: '#546E7A' }]}><Text style={styles.btnCamaraTexto}>🖼️ Galería</Text></TouchableOpacity>
+                    <TouchableOpacity onPress={tomarFoto} style={styles.btnCamaraAccion}>
+                      <Text style={styles.btnCamaraTexto}>📸 Tomar Foto</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={seleccionarDeGaleria} style={[styles.btnCamaraAccion, { backgroundColor: '#546E7A' }]}>
+                      <Text style={styles.btnCamaraTexto}>🖼️ Galería</Text>
+                    </TouchableOpacity>
                   </View>
-                  {foto && (
-                    <View style={styles.contenedorPreview}>
-                      <Image source={{ uri: foto }} style={styles.fotoPreview} />
-                      <TouchableOpacity onPress={() => setFoto(null)} style={styles.btnBorrarFoto}><Text style={{ color: '#FFF', fontWeight: 'bold', fontSize: 12 }}>Quitar Foto ❌</Text></TouchableOpacity>
-                    </View>
+
+                  {/* Lista horizontal de miniaturas capturadas */}
+                  {listaFotos.length > 0 && (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 10 }}>
+                      {listaFotos.map((uri, index) => (
+                        <View key={index} style={styles.contenedorMiniatura}>
+                          <Image source={{ uri: uri }} style={styles.fotoMiniaturaForm} />
+                          <TouchableOpacity onPress={() => quitarFotoDeLista(index)} style={styles.badgeQuitarFoto}>
+                            <Text style={{ color: '#FFF', fontSize: 10, fontWeight: 'bold' }}>X</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </ScrollView>
                   )}
+
                   <View style={styles.modalBotonera}>
                     <TouchableOpacity style={[styles.modalBtn, styles.modalBtnCancelar]} onPress={() => setModalVisible(false)} disabled={guardandoProgreso}><Text style={styles.btnTextoBlanco}>Cancelar</Text></TouchableOpacity>
                     <TouchableOpacity style={[styles.modalBtn, styles.modalBtnGuardar]} onPress={guardarCambiosEtapa} disabled={guardandoProgreso}><Text style={styles.btnTextoBlanco}>{guardandoProgreso ? "Guardando..." : "Guardar Reporte"}</Text></TouchableOpacity>
@@ -396,7 +447,7 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
           </View>
         </Modal>
 
-        {/* 👁️ MODAL B: VISUALIZADOR DE INFORME Y FOTO (ABRE DESDE CUALQUIER ARCHIVO) */}
+        {/* 👁️ MODAL B: VISUALIZADOR DE INFORME CON CARRUSEL DE IMÁGENES */}
         <Modal animationType="fade" transparent={true} visible={modalVerReporteVisible} onRequestClose={() => setModalVerReporteVisible(false)}>
           <View style={styles.capaFondoModal}>
             <View style={styles.contenidoModal}>
@@ -421,9 +472,46 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
                       <Text style={styles.textoNotasGuardadas}>{reporteDiaSeleccionado.nota_labor}</Text>
                     </View>
 
-                    <Text style={styles.modalLabel}>Registro Fotográfico Adjunto:</Text>
-                    {reporteDiaSeleccionado.foto_evidencia_url ? (
-                      <Image source={{ uri: reporteDiaSeleccionado.foto_evidencia_url }} style={styles.fotoEvidenciaBackend} />
+                    <Text style={styles.modalLabel}>Registro de Evidencias (Desliza para ver más):</Text>
+                    
+                    {/* 🔥 EL CARRUSEL EN FORMA INTERACTIVA */}
+                    {reporteDiaSeleccionado.fotos_urls && reporteDiaSeleccionado.fotos_urls.length > 0 ? (
+                      <View>
+                        <ScrollView 
+                          horizontal 
+                          pagingEnabled 
+                          showsHorizontalScrollIndicator={false}
+                          onScroll={handleScrollCarrusel}
+                          scrollEventThrottle={16}
+                          style={styles.contenedorCarrusel}
+                        >
+                          {reporteDiaSeleccionado.fotos_urls.map((imgUrl, i) => (
+                            <Image 
+                              key={i} 
+                              source={{ uri: imgUrl }} 
+                              style={styles.fotoEvidenciaCarrusel} 
+                            />
+                          ))}
+                        </ScrollView>
+                        
+                        {/* Puntos de paginación del Carrusel */}
+                        {reporteDiaSeleccionado.fotos_urls.length > 1 && (
+                          <View style={styles.contenedorPuntos}>
+                            {reporteDiaSeleccionado.fotos_urls.map((_, i) => (
+                              <View 
+                                key={i} 
+                                style={[
+                                  styles.puntoCarrusel, 
+                                  indiceCarruselActivo === i ? styles.puntoActivo : styles.puntoInactivo
+                                ]} 
+                              />
+                            ))}
+                          </View>
+                        )}
+                      </View>
+                    ) : reporteDiaSeleccionado.foto_evidencia_url ? (
+                      /* Fallback por si la foto viene del campo individual viejo */
+                      <Image source={{ uri: reporteDiaSeleccionado.foto_evidencia_url }} style={styles.fotoEvidenciaCarrusel} />
                     ) : (
                       <View style={styles.sinFotoContenedor}>
                         <Text style={{ color: '#78909C', fontSize: 13, fontWeight: '500' }}>⚠️ No se subió evidencia fotográfica este día.</Text>
@@ -472,12 +560,11 @@ const styles = StyleSheet.create({
 
   pestanasPrincipales: { flexDirection: 'row', borderBottomWidth: 2, borderBottomColor: '#ECEFF1', marginBottom: 15 },
   tabPrincipal: { flex: 1, paddingVertical: 12, alignItems: 'center', borderBottomWidth: 3, borderBottomColor: 'transparent' },
-  tabPrincipalActiva: { borderBottomColor: '#87C442' },
+  tabPrincipalActivo: { borderBottomColor: '#87C442' },
   tabPrincipalTexto: { fontSize: 14, fontWeight: '600', color: '#78909C' },
   tabPrincipalTextoActivo: { color: '#87C442', fontWeight: 'bold' },
 
-  // 👑 ESTILOS NUEVOS DE LA SUPER-TARJETA DE INFORME GENERAL
-  cardInformeGeneralUnificado: { backgroundColor: '#EFF6FF', padding: 16, borderRadius: 12, marginBottom: 15, borderWidth: 1, borderColor: '#BFDBFE', elevation: 2, shadowColor: '#1E3A8A', shadowOpacity: 0.1, shadowRadius: 3 },
+  cardInformeGeneralUnificado: { backgroundColor: '#EFF6FF', padding: 16, borderRadius: 12, marginBottom: 15, borderWidth: 1, borderColor: '#BFDBFE', elevation: 2 },
   tituloSuperTarjeta: { fontSize: 15, fontWeight: 'bold', color: '#1E3A8A' },
   subtituloSuperTarjeta: { fontSize: 12, color: '#3B82F6', marginTop: 3, fontWeight: '500' },
   tagEtapaInformeGeneral: { fontSize: 11, fontWeight: 'bold', color: '#2563EB', backgroundColor: '#DBEAFE', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, alignSelf: 'flex-start', marginTop: 6, overflow: 'hidden' },
@@ -519,19 +606,28 @@ const styles = StyleSheet.create({
   modalInputCorto: { width: 80, backgroundColor: '#F1F3F5', borderWidth: 1, borderColor: '#CFD8DC', borderRadius: 8, padding: 8, fontSize: 16, textAlign: 'center' },
   modalInputLargo: { width: '100%', backgroundColor: '#F1F3F5', borderWidth: 1, borderColor: '#CFD8DC', borderRadius: 8, padding: 12, fontSize: 14, textAlignVertical: 'top' },
   
-  camaraBotonera: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginBottom: 10 },
-  btnCamaraAccion: { backgroundColor: '#0284c7', paddingVertical: 10, paddingHorizontal: 15, borderRadius: 8, flex: 0.48, alignItems: 'center' },
+  camaraBotonera: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginBottom: 10, marginTop: 4 },
+  btnCamaraAccion: { backgroundColor: '#0284c7', paddingVertical: 12, paddingHorizontal: 15, borderRadius: 8, flex: 0.48, alignItems: 'center' },
   btnCamaraTexto: { color: '#FFF', fontWeight: 'bold', fontSize: 13 },
-  contenedorPreview: { width: '100%', alignItems: 'center', marginVertical: 10 },
-  fotoPreview: { width: '100%', height: 160, borderRadius: 8, resizeMode: 'cover' },
-  btnBorrarFoto: { backgroundColor: '#ef4444', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 5, marginTop: 6 },
+  
+  // Estilos del Formulario Multi-foto
+  contenedorMiniatura: { marginRight: 10, position: 'relative' },
+  fotoMiniaturaForm: { width: 70, height: 70, borderRadius: 8, borderWidth: 1, borderColor: '#CBD5E1' },
+  badgeQuitarFoto: { position: 'absolute', top: -4, right: -4, backgroundColor: '#EF4444', width: 18, height: 18, borderRadius: 9, justifyContent: 'center', alignItems: 'center' },
 
   contenedorDetalleInfo: { width: '100%', marginTop: 5 },
   textoDestacadoProgreso: { fontSize: 18, fontWeight: 'bold', color: '#87C442', marginVertical: 6 },
-  cajaNotasGuardadas: { width: '100%', backgroundColor: '#F8F9FA', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#E1E5EB' },
+  cajaNotasGuardadas: { width: '100%', backgroundColor: '#F8F9FA', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#E1E5EB', marginBottom: 12 },
   textoNotasGuardadas: { fontSize: 14, color: '#333', lineHeight: 20 },
-  fotoEvidenciaBackend: { width: '100%', height: 210, borderRadius: 10, marginTop: 10, resizeMode: 'cover', borderWidth: 1, borderColor: '#CFD8DC' },
   sinFotoContenedor: { width: '100%', backgroundColor: '#F1F3F5', padding: 16, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#CFD8DC', borderStyle: 'dashed' },
+
+  // Estilos de la visualización en Carrusel
+  contenedorCarrusel: { width: '100%', height: 220, borderRadius: 10, marginTop: 5 },
+  fotoEvidenciaCarrusel: { width: SCREEN_WIDTH - 80, height: 220, borderRadius: 10, resizeMode: 'contain', backgroundColor: '#000' },
+  contenedorPuntos: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 10 },
+  puntoCarrusel: { height: 8, borderRadius: 4, marginHorizontal: 4 },
+  puntoActivo: { width: 18, backgroundColor: '#0284c7' },
+  puntoInactivo: { width: 8, backgroundColor: '#CBD5E1' },
 
   modalBotonera: { flexDirection: 'row', marginTop: 20, width: '100%', gap: 10, marginBottom: 10 },
   modalBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },

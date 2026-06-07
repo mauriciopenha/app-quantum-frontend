@@ -1,11 +1,93 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, TextInput, Alert, Modal, ScrollView, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, PanResponder, Animated, TextInput, Alert, Modal, ScrollView, Dimensions } from 'react-native';
 import api from '../api';
 import EmpresaLoader from './EmpresaLoader';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+// 🖼️ COMPONENTE DE IMAGEN OPTIMIZADO CON VALIDADOR DE GESTOS COMPARTIDO
+const VistaImagenConZoom = ({ uri, setCarruselBloqueado }) => {
+  const escala = new Animated.Value(1);
+  const ultimoIdDistancia = { current: 0 };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      // ❌ No interceptar el toque inicial con un solo dedo para dejar que FlatList deslice normalmente
+      onStartShouldSetPanResponder: () => false,
+      
+      // 🤔 Interceptar el movimiento SOLO si hay exactamente 2 dedos en la pantalla (Intención de Zoom)
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        const esGestoZoom = gestureState.numberActiveTouches === 2;
+        if (esGestoZoom) {
+          setCarruselBloqueado(true); // 🛑 Congela el FlatList inmediatamente
+        }
+        return esGestoZoom;
+      },
+      
+      onPanResponderMove: (evt, gestureState) => {
+        if (gestureState.numberActiveTouches === 2) {
+          const touches = evt.nativeEvent.touches;
+          if (touches && touches.length >= 2) {
+            // Teorema de Pitágoras para medir la separación de los dedos
+            const dx = touches[0].pageX - touches[1].pageX;
+            const dy = touches[0].pageY - touches[1].pageY;
+            const distancia = Math.sqrt(dx * dx + dy * dy);
+
+            if (ultimoIdDistancia.current === 0) {
+              ultimoIdDistancia.current = distancia;
+            } else {
+              const ratio = distancia / ultimoIdDistancia.current;
+              let nuevaEscala = escala._value * ratio;
+              
+              // Acotar límites lógicos de visualización
+              if (nuevaEscala < 1) nuevaEscala = 1;
+              if (nuevaEscala > 4) nuevaEscala = 4;
+
+              escala.setValue(nuevaEscala);
+              ultimoIdDistancia.current = distancia;
+            }
+          }
+        }
+      },
+      
+      onPanResponderRelease: () => {
+        ultimoIdDistancia.current = 0;
+        setCarruselBloqueado(false); // 🔓 Libera el FlatList para que el usuario pueda deslizar de nuevo
+        
+        // Animación suave de retorno si la escala queda muy cercana al tamaño original
+        if (escala._value < 1.1) {
+          Animated.spring(escala, {
+            toValue: 1,
+            useNativeDriver: true,
+          }).start();
+        }
+      },
+      onPanResponderTerminate: () => {
+        ultimoIdDistancia.current = 0;
+        setCarruselBloqueado(false); // Asegurar desbloqueo ante interrupciones del sistema
+      }
+    })
+  ).current;
+
+  return (
+    <View 
+      style={{ width: SCREEN_WIDTH, height: '100%', justifyContent: 'center', alignItems: 'center' }}
+      {...panResponder.panHandlers}
+    >
+      <Animated.Image
+        source={{ uri: uri }}
+        style={{
+          width: SCREEN_WIDTH,
+          height: '80%',
+          transform: [{ scale: escala }],
+          resizeMode: 'contain'
+        }}
+      />
+    </View>
+  );
+};
 
 export default function ProjectChecklistScreen({ token, onVolver }) {
   const [cargando, setCargando] = useState(true);
@@ -32,13 +114,21 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
   const [laborDelDia, setLaborDelDia] = useState('');
   const [guardandoProgreso, setGuardandoProgreso] = useState(false);
 
-  // 📸 ARRAY DE FOTOS SELECCIONADAS (Soporta múltiples imágenes para el carrusel)
+  // 📸 ARRAY DE FOTOS SELECCIONADAS
   const [listaFotos, setListaFotos] = useState([]);
 
   // 👁️ MODAL FINAL DE VISUALIZACIÓN
   const [modalVerReporteVisible, setModalVerReporteVisible] = useState(false);
   const [reporteDiaSeleccionado, setReporteDiaSeleccionado] = useState(null);
   const [indiceCarruselActivo, setIndiceCarruselActivo] = useState(0);
+
+  // 🖼️ ESTADOS DEL VISOR DE IMÁGENES PREMIUM
+  const [modalVisorVisible, setModalVisorVisible] = useState(false);
+  const [fotosVisor, setFotosVisor] = useState([]);
+  const [indiceInicialVisor, setIndiceInicialVisor] = useState(0);
+  
+  // 🔐 CONTROL DE INTERFERENCIA DE GESTOS INTERNOS
+  const [carruselBloqueado, setCarruselBloqueado] = useState(false);
 
   // ESTADOS DEL MÓDULO 2: MATERIALES
   const [materialesBodega, setMaterialesBodega] = useState([]);
@@ -114,7 +204,7 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     setEtapaSeleccionada(etapa);
     setNuevoPorcentaje(etapa.porcentaje_avance.toString());
     setLaborDelDia(''); 
-    setListaFotos([]); // Limpiamos la ráfaga anterior
+    setListaFotos([]); 
     setModalVisible(true);
   };
 
@@ -124,12 +214,17 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     setModalVerReporteVisible(true);
   };
 
-  // 📸 ACCIONES MULTIMEDIA OPTIMIZADAS (Sin recorte forzado y con almacenamiento múltiple)
+  const abrirVisorImagen = (urls, indice) => {
+    setFotosVisor(urls);
+    setIndiceInicialVisor(indice);
+    setCarruselBloqueado(false); // Resetear cerrojo de seguridad antes de abrir
+    setModalVisorVisible(true);
+  };
+
   const tomarFoto = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== 'granted') return Alert.alert('Permiso requerido', 'Acceso denegado a cámara.');
     
-    // 🔥 ELIMINADO: allowsEditing y aspect para conservar la imagen completa de los paneles solares
     let result = await ImagePicker.launchCameraAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: false, 
@@ -147,8 +242,8 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: false, // Sin recorte forzado
-      allowsMultipleSelection: true, // Habilita la selección de varias fotos juntas si se desea
+      allowsEditing: false, 
+      allowsMultipleSelection: true, 
       quality: 0.8
     });
     
@@ -163,56 +258,49 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
   };
 
   const guardarCambiosEtapa = async () => {
-  const porcentajeNum = parseInt(nuevoPorcentaje);
-  if (isNaN(porcentajeNum) || porcentajeNum < 0 || porcentajeNum > 100) {
-    Alert.alert("Dato Inválido", "El porcentaje debe ser de 0 a 100.");
-    return;
-  }
-
-  try {
-    setGuardandoProgreso(true);
-    const formData = new FormData();
-    formData.append('etapa_id', etapaSeleccionada.id);
-    formData.append('porcentaje_avance', porcentajeNum);
-    formData.append('notes_progreso', laborDelDia);
-    formData.append('notas_progreso', laborDelDia);
-
-    // 🔥 PROCESAMIENTO PROFESIONAL DE MÚLTIPLES FOTOS (CÁMARA O GALERÍA)
-    if (listaFotos && listaFotos.length > 0) {
-      listaFotos.forEach((uri, index) => {
-        // Extraer el nombre del archivo y su extensión de forma segura
-        const filename = uri.split('/').pop();
-        const match = /\.(\w+)$/.exec(filename || '');
-        const type = match ? `image/${match[1]}` : `image/jpeg`;
-
-        // 💡 CLAVE: Usamos 'foto' repetidas veces. Django .getlist('foto') capturará todas.
-        formData.append('foto', {
-          uri: uri,
-          name: filename || `evidencia_${index}.jpg`,
-          type: type
-        });
-      });
-      console.log(`Empaquetadas ${listaFotos.length} fotos en el FormData.`);
-    } else {
-      console.log("No se seleccionaron fotos para este reporte.");
+    const porcentajeNum = parseInt(nuevoPorcentaje);
+    if (isNaN(porcentajeNum) || porcentajeNum < 0 || porcentajeNum > 100) {
+      Alert.alert("Dato Inválido", "El porcentaje debe ser de 0 a 100.");
+      return;
     }
 
-    // Envío limpio al Backend
-    await api.post(`inventario/proyectos/${proyectoSeleccionado.id}/checklist/`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    try {
+      setGuardandoProgreso(true);
+      const formData = new FormData();
+      formData.append('etapa_id', etapaSeleccionada.id);
+      formData.append('porcentaje_avance', porcentajeNum);
+      formData.append('notes_progreso', laborDelDia);
+      formData.append('notas_progreso', laborDelDia);
 
-    await refrescarChecklistSilencioso();
-    setModalVisible(false);
-    setListaFotos([]);
-    Alert.alert("¡Éxito!", "Reporte diario transmitido correctamente.");
-  } catch (error) {
-    console.error("Error guardando etapa:", error);
-    Alert.alert("Error", "No se pudo transmitir el reporte al servidor.");
-  } finally {
-    setGuardandoProgreso(false);
-  }
-};
+      if (listaFotos && listaFotos.length > 0) {
+        listaFotos.forEach((uri, index) => {
+          const filename = uri.split('/').pop();
+          const match = /\.(\w+)$/.exec(filename || '');
+          const type = match ? `image/${match[1]}` : `image/jpeg`;
+
+          formData.append('foto', {
+            uri: uri,
+            name: filename || `evidencia_${index}.jpg`,
+            type: type
+          });
+        });
+      }
+
+      await api.post(`inventario/proyectos/${proyectoSeleccionado.id}/checklist/`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+
+      await refrescarChecklistSilencioso();
+      setModalVisible(false);
+      setListaFotos([]);
+      Alert.alert("¡Éxito!", "Reporte diario transmitido correctamente.");
+    } catch (error) {
+      console.error("Error guardando etapa:", error);
+      Alert.alert("Error", "No se pudo transmitir el reporte al servidor.");
+    } finally {
+      setGuardandoProgreso(false);
+    }
+  };
 
   const proyectosFiltrados = proyectos.filter(p => p.nombre.toLowerCase().includes(busqueda.toLowerCase()));
   const materialesFiltrados = (origenMaterial === 'BODEGA' ? materialesBodega : materialesCompra).filter(mat => 
@@ -285,10 +373,9 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     </View>
   );
 
-  // Manejador del scroll del carrusel para actualizar los puntitos indicadores
   const handleScrollCarrusel = (event) => {
     const posicionX = event.nativeEvent.contentOffset.x;
-    const indice = Math.round(posicionX / (SCREEN_WIDTH - 80)); // Ajustado al tamaño interno del contenedor modal
+    const indice = Math.round(posicionX / (SCREEN_WIDTH - 80)); 
     setIndiceCarruselActivo(indice);
   };
 
@@ -398,7 +485,7 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
           </View>
         )}
 
-        {/* 🪟 MODAL A: REPORTAR LABOR DIARIA (MÚLTIPLES FOTOS HORIZONTALES) */}
+        {/* 🪟 MODAL A: REPORTAR LABOR DIARIA */}
         <Modal animationType="slide" transparent={true} visible={modalVisible} onRequestClose={() => setModalVisible(false)}>
           <View style={styles.capaFondoModal}>
             <View style={styles.contenidoModal}>
@@ -413,7 +500,7 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
                   <Text style={styles.modalLabel}>¿Qué labor técnica se realizó hoy?:</Text>
                   <TextInput style={styles.modalInputLargo} multiline={true} numberOfLines={3} placeholder="Ej: Se instalaron soportes y rieles sin cortes estructurales." placeholderTextColor="#999" value={laborDelDia} onChangeText={setLaborDelDia} />
                   
-                  <Text style={styles.modalLabel}>Evidencias Fotográficas (¡Puedes tomar varias!):</Text>
+                  <Text style={styles.modalLabel}>Evidencias Fotográficas:</Text>
                   <View style={styles.camaraBotonera}>
                     <TouchableOpacity onPress={tomarFoto} style={styles.btnCamaraAccion}>
                       <Text style={styles.btnCamaraTexto}>📸 Tomar Foto</Text>
@@ -423,7 +510,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
                     </TouchableOpacity>
                   </View>
 
-                  {/* Lista horizontal de miniaturas capturadas */}
                   {listaFotos.length > 0 && (
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 10 }}>
                       {listaFotos.map((uri, index) => (
@@ -474,7 +560,6 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
 
                     <Text style={styles.modalLabel}>Registro de Evidencias (Desliza para ver más):</Text>
                     
-                    {/* 🔥 EL CARRUSEL EN FORMA INTERACTIVA */}
                     {reporteDiaSeleccionado.fotos_urls && reporteDiaSeleccionado.fotos_urls.length > 0 ? (
                       <View>
                         <ScrollView 
@@ -486,15 +571,19 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
                           style={styles.contenedorCarrusel}
                         >
                           {reporteDiaSeleccionado.fotos_urls.map((imgUrl, i) => (
-                            <Image 
-                              key={i} 
-                              source={{ uri: imgUrl }} 
-                              style={styles.fotoEvidenciaCarrusel} 
-                            />
+                            <TouchableOpacity
+                              key={i}
+                              activeOpacity={0.9}
+                              onPress={() => abrirVisorImagen(reporteDiaSeleccionado.fotos_urls, i)}
+                            >
+                              <Image 
+                                source={{ uri: imgUrl }} 
+                                style={styles.fotoEvidenciaCarrusel} 
+                              />
+                            </TouchableOpacity>
                           ))}
                         </ScrollView>
                         
-                        {/* Puntos de paginación del Carrusel */}
                         {reporteDiaSeleccionado.fotos_urls.length > 1 && (
                           <View style={styles.contenedorPuntos}>
                             {reporteDiaSeleccionado.fotos_urls.map((_, i) => (
@@ -510,8 +599,12 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
                         )}
                       </View>
                     ) : reporteDiaSeleccionado.foto_evidencia_url ? (
-                      /* Fallback por si la foto viene del campo individual viejo */
-                      <Image source={{ uri: reporteDiaSeleccionado.foto_evidencia_url }} style={styles.fotoEvidenciaCarrusel} />
+                      <TouchableOpacity 
+                        activeOpacity={0.9} 
+                        onPress={() => abrirVisorImagen([reporteDiaSeleccionado.foto_evidencia_url], 0)}
+                      >
+                        <Image source={{ uri: reporteDiaSeleccionado.foto_evidencia_url }} style={styles.fotoEvidenciaCarrusel} />
+                      </TouchableOpacity>
                     ) : (
                       <View style={styles.sinFotoContenedor}>
                         <Text style={{ color: '#78909C', fontSize: 13, fontWeight: '500' }}>⚠️ No se subió evidencia fotográfica este día.</Text>
@@ -530,6 +623,60 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
           </View>
         </Modal>
 
+        {/* 🖼️ MODAL C: VISOR DE IMÁGENES PREMIUM EN PANTALLA COMPLETA + GESTOS FILTRADOS */}
+        <Modal
+          visible={modalVisorVisible}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setModalVisorVisible(false)}
+        >
+          <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.95)' }}>
+                    
+            {/* Botón Cerrar */}
+            <View style={{ position: 'absolute', top: 50, right: 20, zIndex: 10 }}>
+              <TouchableOpacity 
+                onPress={() => setModalVisorVisible(false)}
+                style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.3)',
+                  width: 44,
+                  height: 44,
+                  borderRadius: 22,
+                  justifyContent: 'center',
+                  alignItems: 'center'
+                }}
+              >
+                <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>X</Text>
+              </TouchableOpacity>
+            </View>
+              
+            {/* El carrusel se congela inteligentemente cuando escala la imagen */}
+            <FlatList
+              data={fotosVisor}
+              horizontal
+              pagingEnabled
+              scrollEnabled={!carruselBloqueado} // 🔒 Desactiva el carrusel temporalmente durante el zoom
+              showsHorizontalScrollIndicator={false}
+              initialScrollIndex={indiceInicialVisor}
+              getItemLayout={(data, index) => (
+                { length: SCREEN_WIDTH, offset: SCREEN_WIDTH * index, index }
+              )}
+              keyExtractor={(item, index) => index.toString()}
+              renderItem={({ item }) => (
+                <VistaImagenConZoom 
+                  uri={item} 
+                  setCarruselBloqueado={setCarruselBloqueado} 
+                />
+              )}
+            />
+        
+            <View style={{ position: 'absolute', bottom: 40, left: 0, right: 0, alignItems: 'center' }}>
+              <Text style={{ color: 'rgba(255, 255, 255, 0.5)', fontSize: 13, fontWeight: '500' }}>
+                ↔️ Un dedo para navegar / ✌️ Dos dedos para hacer zoom
+              </Text>
+            </View>
+            
+          </View>
+        </Modal> 
       </View>
     );
   }

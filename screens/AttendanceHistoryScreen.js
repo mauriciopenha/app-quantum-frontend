@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Alert, TouchableOpacity, Linking, ScrollView } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, FlatList, Alert, TouchableOpacity, Linking } from 'react-native';
 import api from '../api'; 
 import EmpresaLoader from './EmpresaLoader'; 
 
@@ -10,7 +10,7 @@ const TarjetaResumenPeriodo = ({ historial, mesSeleccionado, filtroPeriodo }) =>
     let acumuladoExtrasDF = 0;         
 
     const hoy = new Date();
-    const anioActual = hoy.getFullYear(); // 2026
+    const anioActual = hoy.getFullYear(); 
 
     historial.forEach(dia => {
       if (!dia.fecha) return;
@@ -22,10 +22,7 @@ const TarjetaResumenPeriodo = ({ historial, mesSeleccionado, filtroPeriodo }) =>
       const mesNum = parseInt(partes[1], 10); 
       const anioNum = parseInt(partes[2], 10);
 
-      // 1️⃣ Validamos el mes y año seleccionado
       if (mesNum === mesSeleccionado && anioNum === anioActual) {
-        
-        // 2️⃣ Evaluamos el filtro quincenal interactivo
         let pasaFiltroPeriodo = false;
         if (filtroPeriodo === 'COMPLETO') pasaFiltroPeriodo = true;
         if (filtroPeriodo === 'Q1' && diaNum <= 15) pasaFiltroPeriodo = true;
@@ -55,7 +52,6 @@ const TarjetaResumenPeriodo = ({ historial, mesSeleccionado, filtroPeriodo }) =>
   fechaMes.setMonth(mesSeleccionado - 1);
   const nombreMes = fechaMes.toLocaleString('es-CO', { month: 'long' }).toUpperCase();
 
-  // Título dinámico adaptado según la selección de los botones
   let textoTitulo = `📊 ACUMULADO TOTAL: MES DE ${nombreMes}`;
   if (filtroPeriodo === 'Q1') textoTitulo = `📅 ACUMULADO: 1RA QUINCENA DE ${nombreMes}`;
   if (filtroPeriodo === 'Q2') textoTitulo = `📅 ACUMULADO: 2DA QUINCENA DE ${nombreMes}`;
@@ -174,16 +170,61 @@ export default function AttendanceHistoryScreen({ token }) {
   const [historial, setHistorial] = useState([]);
   const [cargando, setCargando] = useState(true);
 
-  const [mesSeleccionado, setMesSeleccionado] = useState(new Date().getMonth() + 1);
+  // Estados de filtrado
+  const mesActualDelSistema = new Date().getMonth() + 1; // 6 para Junio
+  const [mesSeleccionado, setMesSeleccionado] = useState(mesActualDelSistema);
   const [filtroPeriodo, setFiltroPeriodo] = useState('COMPLETO');
   const [historialFiltrado, setHistorialFiltrado] = useState([]);
 
-  const mesesAnio = [
+  // Referencia para controlar el scroll del carrusel de meses
+  const flatListMesesRef = useRef(null);
+
+  const mesesBase = [
     { id: 1, nombre: 'Ene' }, { id: 2, nombre: 'Feb' }, { id: 3, nombre: 'Mar' },
     { id: 4, nombre: 'Abr' }, { id: 5, nombre: 'May' }, { id: 6, nombre: 'Jun' },
     { id: 7, nombre: 'Jul' }, { id: 8, nombre: 'Ago' }, { id: 9, nombre: 'Sep' },
-    { id: 10, nombre: 'Oct' }, { id: 11, nombre: 'Nov' }, { id: 12, nombre: 'Dic' }
+    { id: 10, nombre: 'Oct' }, { id: 11, nombre: 'Nov' }, { id: 12, merge: 'Dic', nombre: 'Dic' }
   ];
+
+  // Generamos una lista larga repitiendo los meses para simular el bucle infinito circular
+  const REPETICIONES = 50; 
+  const mesesInfinitos = Array.from({ length: REPETICIONES }, (_, i) => 
+    mesesBase.map(m => ({ ...m, unicoId: `${m.id}-${i}` }))
+  ).flat();
+
+  // El "centro" real inicial de nuestra lista larga correspondiente al mes en curso
+  const indiceCentroInicial = (Math.floor(REPETICIONES / 2) * 12) + (mesActualDelSistema - 1);
+
+  // Función encargada de centrar suavemente un mes específico en la pantalla
+  const centrarMesEnPantalla = (idMes, animar = true) => {
+    if (!flatListMesesRef.current) return;
+    
+    // Buscamos el índice que esté más cerca del centro visual de la lista infinita
+    const indicesCoincidentes = [];
+    mesesInfinitos.forEach((m, idx) => {
+      if (m.id === idMes) indicesCoincidentes.push(idx);
+    });
+
+    const centroIdeal = Math.floor(mesesInfinitos.length / 2);
+    const indiceMasCercanoAlCentro = indicesCoincidentes.reduce((prev, curr) => 
+      Math.abs(curr - centroIdeal) < Math.abs(prev - centroIdeal) ? curr : prev
+    );
+
+    flatListMesesRef.current.scrollToIndex({
+      index: indiceMasCercanoAlCentro,
+      viewPosition: 0.5, // ⭐ 0.5 fuerza a React Native a ubicar el ítem exactamente en el medio horizontal de la pantalla
+      animated: animar
+    });
+  };
+
+  // 🎯 NUEVO EFECTO: Fuerza el centrado inicial correcto de Junio apenas abre la pantalla
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      centrarMesEnPantalla(mesSeleccionado, false);
+    }, 450); // Le damos un pequeño respiro a la UI para renderizar antes de centrar
+
+    return () => clearTimeout(timer);
+  }, []);
 
   const calcularHorasYExtras = (marcasDelDia, tagDia) => {
     if (!marcasDelDia || !Array.isArray(marcasDelDia)) {
@@ -327,7 +368,7 @@ export default function AttendanceHistoryScreen({ token }) {
     obtenerHistorial();
   }, []);
 
-  // 🔄 MOTOR DE FILTRADO DINÁMICO (Cruza Mes + Quincena elegida por el usuario)
+  // 🔄 MOTOR DE FILTRADO DINÁMICO
   useEffect(() => {
     if (historial.length > 0) {
       const filtrados = historial.filter(dia => {
@@ -337,10 +378,8 @@ export default function AttendanceHistoryScreen({ token }) {
         const diaNum = parseInt(partes[0], 10);
         const mesNum = parseInt(partes[1], 10);
 
-        // Filtro 1: Mes
         if (mesNum !== mesSeleccionado) return false;
 
-        // Filtro 2: Tramo del Periodo (Quincenas)
         if (filtroPeriodo === 'Q1' && diaNum > 15) return false;
         if (filtroPeriodo === 'Q2' && diaNum < 16) return false;
 
@@ -356,32 +395,47 @@ export default function AttendanceHistoryScreen({ token }) {
     <View style={styles.container}>
       <Text style={styles.title}>Mi Historial de Asistencia</Text>
       
-      {/* 🗓️ 1️⃣ SELECTOR DE MESES (SCROLL HORIZONTAL) */}
+      {/* 🗓️ 1️⃣ SELECTOR DE MESES INFINITO COHRENTE Y CENTRADO VISUALMENTE */}
       <View style={styles.contenedorMesesExterior}>
-        <ScrollView 
-          horizontal 
+        <FlatList
+          ref={flatListMesesRef}
+          data={mesesInfinitos}
+          horizontal
+          keyExtractor={(item) => item.unicoId}
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.scrollMesesContenido}
-        >
-          {mesesAnio.map((mes) => {
-            const esActivo = mes.id === mesSeleccionado;
+          initialScrollIndex={indiceCentroInicial} 
+          getItemLayout={(data, index) => ({
+            length: 71, // 55 minWidth + 16 (marginHorizontal de 8 a cada lado)
+            offset: 71 * index,
+            index,
+          })}
+          onScrollToIndexFailed={(info) => {
+            setTimeout(() => {
+              flatListMesesRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.5 });
+            }, 50);
+          }}
+          renderItem={({ item }) => {
+            const esActivo = item.id === mesSeleccionado;
             return (
               <TouchableOpacity
-                key={mes.id}
                 activeOpacity={0.7}
-                onPress={() => setMesSeleccionado(mes.id)}
+                onPress={() => {
+                  setMesSeleccionado(item.id);
+                  centrarMesEnPantalla(item.id, true);
+                }}
                 style={[styles.botonMes, esActivo && styles.botonMesActivo]}
               >
                 <Text style={[styles.textoMes, esActivo && styles.textoMesActivo]}>
-                  {mes.nombre}
+                  {item.nombre}
                 </Text>
               </TouchableOpacity>
             );
-          })}
-        </ScrollView>
+          }}
+        />
       </View>
 
-      {/* 📅 2️⃣ SELECTOR DE QUINCENAS (FILA FIJA) */}
+      {/* 📅 2️⃣ SELECTOR DE QUINCENAS */}
       <View style={styles.contenedorQuincenas}>
         <TouchableOpacity
           activeOpacity={0.7}
@@ -445,7 +499,7 @@ export default function AttendanceHistoryScreen({ token }) {
   );
 }
 
-// 🎨 HOJA DE ESTILOS PROPIA E INTEGRADA PERFECTAMENTE
+// 🎨 HOJA DE ESTILOS PROPIA INTEGRADA PERFECTAMENTE
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8f9fa', paddingTop: 10, paddingHorizontal: 15 },
   title: { fontSize: 20, fontWeight: 'bold', color: '#2D2E31', marginBottom: 15, textAlign: 'center' },
@@ -597,7 +651,7 @@ const styles = StyleSheet.create({
   contenedorMesesExterior: {
     backgroundColor: '#fff',
     paddingVertical: 8,
-    marginHorizontal: -15, // Compensa el paddingHorizontal del container principal para que vaya de extremo a extremo
+    marginHorizontal: -15, 
     borderBottomWidth: 1,
     borderBottomColor: '#f1f3f5',
     marginBottom: 5,
@@ -610,8 +664,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 15,
     backgroundColor: '#e9ecef',
-    marginHorizontal: 4,
-    minWidth: 55,
+    marginHorizontal: 8, // Ajustado a 8 simétrico para el cálculo matemático del offset (71px)
+    minWidth: 55, 
     alignItems: 'center',
   },
   botonMesActivo: {
@@ -630,7 +684,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-around',
     backgroundColor: '#fff',
     paddingVertical: 10,
-    marginHorizontal: -15, // Alineado perfecto con los bordes de la pantalla
+    marginHorizontal: -15, 
     borderBottomWidth: 1,
     borderBottomColor: '#dee2e6',
     marginBottom: 15,

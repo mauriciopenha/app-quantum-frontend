@@ -1,22 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Alert, TouchableOpacity, Linking } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Alert, TouchableOpacity, Linking, ScrollView } from 'react-native';
 import api from '../api'; 
 import EmpresaLoader from './EmpresaLoader'; 
 
-// 📊 COMPONENTE CORREGIDO: EXTRAS ORDINARIAS DE SEMANA VS EXTRAS FESTIVAS
-const TarjetaResumenQuincenal = ({ historial }) => {
-  const obtenerTotalesQuincena = () => {
-    let acumuladoExtrasOrdinarias = 0; // 💼 Antes llamadas ordinarias, ahora son extras de semana
-    let acumuladoExtrasDF = 0;         // ⏱️ Extras de Domingos y Festivos
+// 📊 COMPONENTE TARJETA DE RESUMEN: ADAPTADO A MES Y QUINCENAS DETALLADAS EN TIEMPO REAL
+const TarjetaResumenPeriodo = ({ historial, mesSeleccionado, filtroPeriodo }) => {
+  const obtenerTotalesFiltrados = () => {
+    let acumuladoExtrasOrdinarias = 0; 
+    let acumuladoExtrasDF = 0;         
 
     const hoy = new Date();
-    const mesActual = hoy.getMonth() + 1; // Junio = 6
     const anioActual = hoy.getFullYear(); // 2026
-    const diaActual = hoy.getDate();
-
-    const esPrimeraQuincena = diaActual <= 15;
-    const diaInicio = esPrimeraQuincena ? 1 : 16;
-    const diaFin = esPrimeraQuincena ? 15 : 31;
 
     historial.forEach(dia => {
       if (!dia.fecha) return;
@@ -28,38 +22,47 @@ const TarjetaResumenQuincenal = ({ historial }) => {
       const mesNum = parseInt(partes[1], 10); 
       const anioNum = parseInt(partes[2], 10);
 
-      // 🎯 FILTRO QUINCENAL ESTRICTO
-      if (mesNum === mesActual && anioNum === anioActual && diaNum >= diaInicio && diaNum <= diaFin) {
+      // 1️⃣ Validamos el mes y año seleccionado
+      if (mesNum === mesSeleccionado && anioNum === anioActual) {
         
-        // Obtenemos las extras ya calculadas por tu función matemática (vienen como string)
-        const horasExtrasCalculadas = parseInt(dia.totalExtras, 10) || 0;
+        // 2️⃣ Evaluamos el filtro quincenal interactivo
+        let pasaFiltroPeriodo = false;
+        if (filtroPeriodo === 'COMPLETO') pasaFiltroPeriodo = true;
+        if (filtroPeriodo === 'Q1' && diaNum <= 15) pasaFiltroPeriodo = true;
+        if (filtroPeriodo === 'Q2' && diaNum >= 16) pasaFiltroPeriodo = true;
 
-        if (dia.tagDia === 'Festivo/Domingo') {
-          // Si el tag es festivo, se va a la bolsa de festivas
-          acumuladoExtrasDF += horasExtrasCalculadas;
-        } else {
-          // 🟢 SI ES DÍA DE SEMANA O SÁBADO:
-          // Sumamos las horas extras aquí (las del 2 y 6 de junio caerán exactamente aquí)
-          acumuladoExtrasOrdinarias += horasExtrasCalculadas;
+        if (pasaFiltroPeriodo) {
+          const horasExtrasCalculadas = parseInt(dia.totalExtras, 10) || 0;
+
+          if (dia.tagDia === 'Festivo/Domingo') {
+            acumuladoExtrasDF += horasExtrasCalculadas;
+          } else {
+            acumuladoExtrasOrdinarias += horasExtrasCalculadas;
+          }
         }
       }
     });
 
-    const ultimoDiaMes = new Date(anioActual, mesActual, 0).getDate();
-
     return {
-      rango: esPrimeraQuincena ? "1 al 15" : `16 al ${ultimoDiaMes}`,
       extrasOrdinarias: acumuladoExtrasOrdinarias,
       extrasDF: acumuladoExtrasDF   
     };
   };
 
-  const { rango, extrasOrdinarias, extrasDF } = obtenerTotalesQuincena();
-  const nombreMes = new Date().toLocaleString('es-CO', { month: 'long' }).toUpperCase();
+  const { extrasOrdinarias, extrasDF } = obtenerTotalesFiltrados();
+  
+  const fechaMes = new Date();
+  fechaMes.setMonth(mesSeleccionado - 1);
+  const nombreMes = fechaMes.toLocaleString('es-CO', { month: 'long' }).toUpperCase();
+
+  // Título dinámico adaptado según la selección de los botones
+  let textoTitulo = `📊 ACUMULADO TOTAL: MES DE ${nombreMes}`;
+  if (filtroPeriodo === 'Q1') textoTitulo = `📅 ACUMULADO: 1RA QUINCENA DE ${nombreMes}`;
+  if (filtroPeriodo === 'Q2') textoTitulo = `📅 ACUMULADO: 2DA QUINCENA DE ${nombreMes}`;
 
   return (
     <View style={styles.resumenCard}>
-      <Text style={styles.resumenPeriodo}>📅 ACUMULADO QUINCENA: DEL {rango} DE {nombreMes}</Text>
+      <Text style={styles.resumenPeriodo}>{textoTitulo}</Text>
       <View style={styles.resumenContenedorFilas}>
         <View style={styles.resumenBloque}>
           <Text style={styles.resumenEtiqueta}>💼 Extras Ordinarias</Text>
@@ -75,7 +78,7 @@ const TarjetaResumenQuincenal = ({ historial }) => {
   );
 };
 
-// COMPONENTE INDEPENDIENTE PARA LA TARJETA
+// COMPONENTE INDEPENDIENTE PARA LA TARJETA DE CADA DÍA
 const TarjetaAsistencia = ({ item }) => {
   const [expandido, setExpandido] = useState(false);
   const tieneExtras = parseFloat(item.totalExtras) > 0;
@@ -140,7 +143,7 @@ const TarjetaAsistencia = ({ item }) => {
                   </View>
                   
                   <TouchableOpacity 
-                    style={[styles.btnMapa, !tieneGps && styles.btnMapaDeshabilitated]}
+                    style={[styles.btnMapa, !tieneGps && styles.btnMapaDeshabilitado]}
                     onPress={() => abrirMapa(marca.latitud, marca.longitud)}
                     disabled={!tieneGps}
                   >
@@ -170,6 +173,17 @@ const TarjetaAsistencia = ({ item }) => {
 export default function AttendanceHistoryScreen({ token }) { 
   const [historial, setHistorial] = useState([]);
   const [cargando, setCargando] = useState(true);
+
+  const [mesSeleccionado, setMesSeleccionado] = useState(new Date().getMonth() + 1);
+  const [filtroPeriodo, setFiltroPeriodo] = useState('COMPLETO');
+  const [historialFiltrado, setHistorialFiltrado] = useState([]);
+
+  const mesesAnio = [
+    { id: 1, nombre: 'Ene' }, { id: 2, nombre: 'Feb' }, { id: 3, nombre: 'Mar' },
+    { id: 4, nombre: 'Abr' }, { id: 5, nombre: 'May' }, { id: 6, nombre: 'Jun' },
+    { id: 7, nombre: 'Jul' }, { id: 8, nombre: 'Ago' }, { id: 9, nombre: 'Sep' },
+    { id: 10, nombre: 'Oct' }, { id: 11, nombre: 'Nov' }, { id: 12, nombre: 'Dic' }
+  ];
 
   const calcularHorasYExtras = (marcasDelDia, tagDia) => {
     if (!marcasDelDia || !Array.isArray(marcasDelDia)) {
@@ -293,12 +307,9 @@ export default function AttendanceHistoryScreen({ token }) {
         };
       });
 
-      // 🔄 ORDENAMIENTO SEGURO: Parseamos de forma manual "DD/MM/YYYY" para evitar el bug de JS
       listaProcesada.sort((a, b) => {
         const [diaA, mesA, anioA] = a.fecha.split('/').map(Number);
         const [diaB, mesB, anioB] = b.fecha.split('/').map(Number);
-        
-        // Creamos objetos de fecha reales y comparables con el orden correcto (Año, Mes-1, Día)
         return new Date(anioB, mesB - 1, diaB) - new Date(anioA, mesA - 1, diaA);
       });
 
@@ -316,25 +327,115 @@ export default function AttendanceHistoryScreen({ token }) {
     obtenerHistorial();
   }, []);
 
+  // 🔄 MOTOR DE FILTRADO DINÁMICO (Cruza Mes + Quincena elegida por el usuario)
+  useEffect(() => {
+    if (historial.length > 0) {
+      const filtrados = historial.filter(dia => {
+        const partes = dia.fecha.split('/');
+        if (partes.length !== 3) return false;
+        
+        const diaNum = parseInt(partes[0], 10);
+        const mesNum = parseInt(partes[1], 10);
+
+        // Filtro 1: Mes
+        if (mesNum !== mesSeleccionado) return false;
+
+        // Filtro 2: Tramo del Periodo (Quincenas)
+        if (filtroPeriodo === 'Q1' && diaNum > 15) return false;
+        if (filtroPeriodo === 'Q2' && diaNum < 16) return false;
+
+        return true;
+      });
+      setHistorialFiltrado(filtrados);
+    } else {
+      setHistorialFiltrado([]);
+    }
+  }, [historial, mesSeleccionado, filtroPeriodo]);
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Mi Historial de Asistencia</Text>
       
+      {/* 🗓️ 1️⃣ SELECTOR DE MESES (SCROLL HORIZONTAL) */}
+      <View style={styles.contenedorMesesExterior}>
+        <ScrollView 
+          horizontal 
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.scrollMesesContenido}
+        >
+          {mesesAnio.map((mes) => {
+            const esActivo = mes.id === mesSeleccionado;
+            return (
+              <TouchableOpacity
+                key={mes.id}
+                activeOpacity={0.7}
+                onPress={() => setMesSeleccionado(mes.id)}
+                style={[styles.botonMes, esActivo && styles.botonMesActivo]}
+              >
+                <Text style={[styles.textoMes, esActivo && styles.textoMesActivo]}>
+                  {mes.nombre}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {/* 📅 2️⃣ SELECTOR DE QUINCENAS (FILA FIJA) */}
+      <View style={styles.contenedorQuincenas}>
+        <TouchableOpacity
+          activeOpacity={0.7}
+          onPress={() => setFiltroPeriodo('COMPLETO')}
+          style={[styles.botonPeriodo, filtroPeriodo === 'COMPLETO' && styles.botonPeriodoActivo]}
+        >
+          <Text style={[styles.textoPeriodo, filtroPeriodo === 'COMPLETO' && styles.textoPeriodoActivo]}>
+            Mes Completo
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          activeOpacity={0.7}
+          onPress={() => setFiltroPeriodo('Q1')}
+          style={[styles.botonPeriodo, filtroPeriodo === 'Q1' && styles.botonPeriodoActivo]}
+        >
+          <Text style={[styles.textoPeriodo, filtroPeriodo === 'Q1' && styles.textoPeriodoActivo]}>
+            1ra Quincena
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          activeOpacity={0.7}
+          onPress={() => setFiltroPeriodo('Q2')}
+          style={[styles.botonPeriodo, filtroPeriodo === 'Q2' && styles.botonPeriodoActivo]}
+        >
+          <Text style={[styles.textoPeriodo, filtroPeriodo === 'Q2' && styles.textoPeriodoActivo]}>
+            2da Quincena
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       {cargando ? (
         <View style={styles.pantallaCentro}>
-          <EmpresaLoader />
+          <EmpresaLoader /> 
           <Text style={styles.textoCarga}>Calculando jornadas de tiempo...</Text>
         </View>
       ) : (
         <FlatList
-          data={historial}
+          data={historialFiltrado}
           keyExtractor={(item) => item.fecha}
-          // 📦 AGREGAMOS NUESTRA TARJETA DE RESUMEN COMO CABECERA DE LA LISTA
-          ListHeaderComponent={historial.length > 0 ? <TarjetaResumenQuincenal historial={historial} /> : null}
+          ListHeaderComponent={
+            historial.length > 0 ? (
+              <TarjetaResumenPeriodo 
+                historial={historial} 
+                mesSeleccionado={mesSeleccionado} 
+                filtroPeriodo={filtroPeriodo}
+              />
+            ) : null
+          }
           renderItem={({ item }) => <TarjetaAsistencia item={item} />} 
           contentContainerStyle={styles.listContainer}
           ListEmptyComponent={
-            <Text style={styles.emptyText}>No tienes registros de asistencia todavía.</Text>
+            <Text style={styles.emptyText}>No tienes registros en el periodo seleccionado.</Text>
           }
           onRefresh={obtenerHistorial}
           refreshing={cargando}
@@ -344,6 +445,7 @@ export default function AttendanceHistoryScreen({ token }) {
   );
 }
 
+// 🎨 HOJA DE ESTILOS PROPIA E INTEGRADA PERFECTAMENTE
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8f9fa', paddingTop: 10, paddingHorizontal: 15 },
   title: { fontSize: 20, fontWeight: 'bold', color: '#2D2E31', marginBottom: 15, textAlign: 'center' },
@@ -426,7 +528,6 @@ const styles = StyleSheet.create({
   geoDetalleText: { fontSize: 11, color: '#6c757d', fontFamily: 'monospace' },
   indicadorToque: { textAlign: 'center', fontSize: 11, color: '#A0A1A6', marginTop: 6, fontWeight: '500' },
 
-  // 🟢 
   btnMapa: {
     backgroundColor: '#E8F5E9',
     borderWidth: 1,
@@ -491,5 +592,70 @@ const styles = StyleSheet.create({
     width: 1,
     height: 40,
     backgroundColor: '#334155',
+  },
+
+  contenedorMesesExterior: {
+    backgroundColor: '#fff',
+    paddingVertical: 8,
+    marginHorizontal: -15, // Compensa el paddingHorizontal del container principal para que vaya de extremo a extremo
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f3f5',
+    marginBottom: 5,
+  },
+  scrollMesesContenido: {
+    paddingHorizontal: 15,
+  },
+  botonMes: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 15,
+    backgroundColor: '#e9ecef',
+    marginHorizontal: 4,
+    minWidth: 55,
+    alignItems: 'center',
+  },
+  botonMesActivo: {
+    backgroundColor: '#007bff', 
+  },
+  textoMes: {
+    fontSize: 13,
+    color: '#495057',
+    fontWeight: '600',
+  },
+  textoMesActivo: {
+    color: '#fff',
+  },
+  contenedorQuincenas: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    backgroundColor: '#fff',
+    paddingVertical: 10,
+    marginHorizontal: -15, // Alineado perfecto con los bordes de la pantalla
+    borderBottomWidth: 1,
+    borderBottomColor: '#dee2e6',
+    marginBottom: 15,
+  },
+  botonPeriodo: {
+    flex: 1,
+    paddingVertical: 8,
+    marginHorizontal: 5,
+    borderRadius: 8,
+    backgroundColor: '#f1f3f5',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  botonPeriodoActivo: {
+    backgroundColor: '#28a745', 
+    borderColor: '#28a745',
+  },
+  textoPeriodo: {
+    fontSize: 13,
+    color: '#495057',
+    fontWeight: '500',
+  },
+  textoPeriodoActivo: {
+    color: '#fff',
+    fontWeight: 'bold',
   },
 });

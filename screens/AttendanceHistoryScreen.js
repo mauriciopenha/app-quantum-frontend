@@ -3,7 +3,79 @@ import { View, Text, StyleSheet, FlatList, Alert, TouchableOpacity, Linking } fr
 import api from '../api'; 
 import EmpresaLoader from './EmpresaLoader'; 
 
-// 🟢 COMPONENTE INDEPENDIENTE PARA LA TARJETA (Evita el error de Invalid Hook Call)
+// 📊 COMPONENTE CORREGIDO: EXTRAS ORDINARIAS DE SEMANA VS EXTRAS FESTIVAS
+const TarjetaResumenQuincenal = ({ historial }) => {
+  const obtenerTotalesQuincena = () => {
+    let acumuladoExtrasOrdinarias = 0; // 💼 Antes llamadas ordinarias, ahora son extras de semana
+    let acumuladoExtrasDF = 0;         // ⏱️ Extras de Domingos y Festivos
+
+    const hoy = new Date();
+    const mesActual = hoy.getMonth() + 1; // Junio = 6
+    const anioActual = hoy.getFullYear(); // 2026
+    const diaActual = hoy.getDate();
+
+    const esPrimeraQuincena = diaActual <= 15;
+    const diaInicio = esPrimeraQuincena ? 1 : 16;
+    const diaFin = esPrimeraQuincena ? 15 : 31;
+
+    historial.forEach(dia => {
+      if (!dia.fecha) return;
+
+      const partes = dia.fecha.split('/');
+      if (partes.length !== 3) return; 
+
+      const diaNum = parseInt(partes[0], 10);
+      const mesNum = parseInt(partes[1], 10); 
+      const anioNum = parseInt(partes[2], 10);
+
+      // 🎯 FILTRO QUINCENAL ESTRICTO
+      if (mesNum === mesActual && anioNum === anioActual && diaNum >= diaInicio && diaNum <= diaFin) {
+        
+        // Obtenemos las extras ya calculadas por tu función matemática (vienen como string)
+        const horasExtrasCalculadas = parseInt(dia.totalExtras, 10) || 0;
+
+        if (dia.tagDia === 'Festivo/Domingo') {
+          // Si el tag es festivo, se va a la bolsa de festivas
+          acumuladoExtrasDF += horasExtrasCalculadas;
+        } else {
+          // 🟢 SI ES DÍA DE SEMANA O SÁBADO:
+          // Sumamos las horas extras aquí (las del 2 y 6 de junio caerán exactamente aquí)
+          acumuladoExtrasOrdinarias += horasExtrasCalculadas;
+        }
+      }
+    });
+
+    const ultimoDiaMes = new Date(anioActual, mesActual, 0).getDate();
+
+    return {
+      rango: esPrimeraQuincena ? "1 al 15" : `16 al ${ultimoDiaMes}`,
+      extrasOrdinarias: acumuladoExtrasOrdinarias,
+      extrasDF: acumuladoExtrasDF   
+    };
+  };
+
+  const { rango, extrasOrdinarias, extrasDF } = obtenerTotalesQuincena();
+  const nombreMes = new Date().toLocaleString('es-CO', { month: 'long' }).toUpperCase();
+
+  return (
+    <View style={styles.resumenCard}>
+      <Text style={styles.resumenPeriodo}>📅 ACUMULADO QUINCENA: DEL {rango} DE {nombreMes}</Text>
+      <View style={styles.resumenContenedorFilas}>
+        <View style={styles.resumenBloque}>
+          <Text style={styles.resumenEtiqueta}>💼 Extras Ordinarias</Text>
+          <Text style={styles.resumenValorOrdinario}>{extrasOrdinarias} hrs</Text>
+        </View>
+        <View style={styles.resumenVerticalDivisor} />
+        <View style={styles.resumenBloque}>
+          <Text style={styles.resumenEtiqueta}>⏱️ Extras / Festivos</Text>
+          <Text style={styles.resumenValorExtra}>{extrasDF} hrs</Text>
+        </View>
+      </View>
+    </View>
+  );
+};
+
+// COMPONENTE INDEPENDIENTE PARA LA TARJETA
 const TarjetaAsistencia = ({ item }) => {
   const [expandido, setExpandido] = useState(false);
   const tieneExtras = parseFloat(item.totalExtras) > 0;
@@ -19,48 +91,43 @@ const TarjetaAsistencia = ({ item }) => {
     });
   };
 
-  // Helper para formatear la hora limpia "HH:MM A/PM" de cada marca interna
   const extraerHoraDetalle = (fechaCompleta) => {
     if (!fechaCompleta) return '--:--';
     const partes = fechaCompleta.split(" ");
     if (partes[1] && partes[2]) {
-      return `${partes[1]} ${partes[2]}`; // Devuelve "08:30 AM" o "04:40 PM"
+      return `${partes[1]} ${partes[2]}`;
     }
     return partes[1] ? partes[1].substring(0, 5) : '--:--';
   };
 
   return (
-    // 1. Cambiamos TouchableOpacity por View para que la tarjeta no se cierre sola
     <View style={styles.card}>
       <View style={styles.cardHeader}>
         <Text style={styles.fechaTitulo}>📅 {item.fecha}</Text>
-        <Text style={styles.cardTag}>{item.tagDia}</Text>
+        <Text style={[styles.cardTag, item.tagDia === 'Festivo/Domingo' && {backgroundColor: '#e63946', color: '#fff'}]}>
+          {item.tagDia}
+        </Text>
       </View>
       
       <View style={styles.cardBody}>
-        {/* Fila de Resumen Principal */}
         <View style={styles.horasFila}>
           <Text style={styles.horaDetalle}><Text style={styles.entradaTexto}>🟢 Ent:</Text> {item.entrada}</Text>
           <Text style={styles.horaDetalle}><Text style={styles.salidaTexto}>🔴 Sal:</Text> {item.salida}</Text>
           <Text style={styles.horaDetalle}><Text style={styles.totalTexto}>Total:</Text> {item.totalHoras} hrs</Text>
         </View>
 
-        {tieneExtras && (
+        {tieneExtras && item.tagDia !== 'Festivo/Domingo' && (
           <View style={styles.badgeExtra}>
             <Text style={styles.badgeExtraTexto}>⏱️ ¡Buen trabajo! +{item.totalExtras} horas extras acumuladas</Text>
           </View>
         )}
 
-        {/* SECCIÓN DESPLEGABLE */}
         {expandido && (
           <View style={styles.seccionDetalleContenedor}>
             <View style={styles.divisorLine} />
             <Text style={styles.tituloDetalleMarcas}>📋 Detalle de Movimientos del Día:</Text>
             
             {item.marcas && item.marcas.map((marca, index) => {
-              // 🔍 Dejamos este console.log temporal para espiar qué datos nos manda Django por la terminal
-              console.log("Datos de la marca recibida de Django:", marca);
-
               const tieneGps = marca.latitud && marca.longitud && parseFloat(marca.latitud) !== 0 && parseFloat(marca.longitud) !== 0;
 
               return (
@@ -73,7 +140,7 @@ const TarjetaAsistencia = ({ item }) => {
                   </View>
                   
                   <TouchableOpacity 
-                    style={[styles.btnMapa, !tieneGps && styles.btnMapaDeshabilitado]}
+                    style={[styles.btnMapa, !tieneGps && styles.btnMapaDeshabilitated]}
                     onPress={() => abrirMapa(marca.latitud, marca.longitud)}
                     disabled={!tieneGps}
                   >
@@ -85,14 +152,13 @@ const TarjetaAsistencia = ({ item }) => {
           </View>
         )}
 
-        {/* 2. Convertimos el indicador inferior en el ÚNICO botón para abrir/cerrar */}
         <TouchableOpacity 
           onPress={() => setExpandido(!expandido)} 
           activeOpacity={0.6}
           style={{ marginTop: 10, paddingVertical: 4 }}
         >
           <Text style={styles.indicadorToque}>
-            {expandido ? '🔼 Toca aquí para ocultar detalles' : '🔽 Toca aquí para ver las 4 marcas y lugar'}
+            {expandido ? '🔼 Toca aquí para ocultar detalles' : '🔽 Toca aquí para ver las marcas y lugar'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -100,7 +166,7 @@ const TarjetaAsistencia = ({ item }) => {
   );
 };
 
-// 🏛️ COMPONENTE PRINCIPAL DE LA PANTALLA
+// COMPONENTE PRINCIPAL DE LA PANTALLA
 export default function AttendanceHistoryScreen({ token }) { 
   const [historial, setHistorial] = useState([]);
   const [cargando, setCargando] = useState(true);
@@ -227,7 +293,15 @@ export default function AttendanceHistoryScreen({ token }) {
         };
       });
 
-      listaProcesada.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+      // 🔄 ORDENAMIENTO SEGURO: Parseamos de forma manual "DD/MM/YYYY" para evitar el bug de JS
+      listaProcesada.sort((a, b) => {
+        const [diaA, mesA, anioA] = a.fecha.split('/').map(Number);
+        const [diaB, mesB, anioB] = b.fecha.split('/').map(Number);
+        
+        // Creamos objetos de fecha reales y comparables con el orden correcto (Año, Mes-1, Día)
+        return new Date(anioB, mesB - 1, diaB) - new Date(anioA, mesA - 1, diaA);
+      });
+
       setHistorial(listaProcesada);
 
     } catch (error) {
@@ -255,7 +329,9 @@ export default function AttendanceHistoryScreen({ token }) {
         <FlatList
           data={historial}
           keyExtractor={(item) => item.fecha}
-          renderItem={({ item }) => <TarjetaAsistencia item={item} />} // 🟢 Llamada limpia al componente tarjeta
+          // 📦 AGREGAMOS NUESTRA TARJETA DE RESUMEN COMO CABECERA DE LA LISTA
+          ListHeaderComponent={historial.length > 0 ? <TarjetaResumenQuincenal historial={historial} /> : null}
+          renderItem={({ item }) => <TarjetaAsistencia item={item} />} 
           contentContainerStyle={styles.listContainer}
           ListEmptyComponent={
             <Text style={styles.emptyText}>No tienes registros de asistencia todavía.</Text>
@@ -367,5 +443,53 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: '#2E7D32',
+  },
+  resumenCard: {
+    backgroundColor: '#1e293b',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  resumenPeriodo: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginBottom: 12,
+    letterSpacing: 0.5,
+  },
+  resumenContenedorFilas: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+  },
+  resumenBloque: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  resumenEtiqueta: {
+    color: '#94a3b8',
+    fontSize: 13,
+    marginBottom: 4,
+  },
+  resumenValorOrdinario: {
+    color: '#f8fafc',
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  resumenValorExtra: {
+    color: '#f59e0b',
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  resumenVerticalDivisor: {
+    width: 1,
+    height: 40,
+    backgroundColor: '#334155',
   },
 });

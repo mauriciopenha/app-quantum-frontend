@@ -136,6 +136,11 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
   const [origenMaterial, setOrigenMaterial] = useState('BODEGA');
   const [busquedaMaterial, setBusquedaMaterial] = useState('');
 
+  // 🆕 ESTADOS DE CREACIÓN DE NUEVO PROYECTO
+  const [modalNuevoProyectoVisible, setModalNuevoProyectoVisible] = useState(false);
+  const [nuevoProyectoNombre, setNuevoProyectoNombre] = useState('');
+  const [creandoProyecto, setCreandoProyecto] = useState(false);
+
   // 1. Cargar la lista general de proyectos
   const cargarProyectos = async () => {
     try {
@@ -179,6 +184,39 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
       Alert.alert("Error", "Hubo un problema al traer la información del proyecto.");
     } finally {
       setCargandoDetalle(false);
+    }
+  };
+
+  // 🆕 3. Enviar datos de nuevo proyecto a Django y autoseleccionar
+  const handleCrearProyecto = async () => {
+    if (!nuevoProyectoNombre.trim()) {
+      Alert.alert("Campo Requerido", "Por favor ingresa un nombre válido para el proyecto.");
+      return;
+    }
+
+    try {
+      setCreandoProyecto(true);
+      
+      // 👇 AQUÍ SE INSERTA LA RUTA CORREGIDA 👇
+      const res = await api.post('inventario/proyectos/crear/', {
+        nombre: nuevoProyectoNombre.trim()
+      });
+
+      Alert.alert("¡Éxito!", `El proyecto "${nuevoProyectoNombre.trim()}" ha sido creado correctamente.`);
+      setModalNuevoProyectoVisible(false);
+      setNuevoProyectoNombre('');
+      
+      // Refrescar listado general e ingresar al proyecto de inmediato
+      await cargarProyectos();
+      
+      // Pasamos el objeto con el ID que nos devuelve Django para que entre directo
+      await seleccionarProyecto({ id: res.data.id, nombre: nuevoProyectoNombre.trim() });
+      
+    } catch (error) {
+      console.error("Error creando proyecto:", error);
+      Alert.alert("Error", "No se pudo registrar el nuevo proyecto en el servidor.");
+    } finally {
+      setCreandoProyecto(false);
     }
   };
 
@@ -681,11 +719,71 @@ export default function ProjectChecklistScreen({ token, onVolver }) {
     );
   }
 
+  // 📝 VISTA PRINCIPAL: SELECCIÓN DE OBRAS + NUEVO BOTÓN FLOTANTE (FAB)
   return (
     <View style={styles.container}>
       <Text style={styles.tituloSeccion}>Selecciona una obra para gestionar:</Text>
       <TextInput style={styles.buscador} placeholder="🔍 Buscar proyecto..." placeholderTextColor="#9E9E9E" value={busqueda} onChangeText={setBusqueda} />
-      <FlatList data={proyectosFiltrados} keyExtractor={(item) => item.id.toString()} renderItem={renderItemProyecto} contentContainerStyle={{ paddingBottom: 20 }} />
+      
+      <FlatList 
+        data={proyectosFiltrados} 
+        keyExtractor={(item) => item.id.toString()} 
+        renderItem={renderItemProyecto} 
+        contentContainerStyle={{ paddingBottom: 90 }} // Margen extra abajo para que el FAB no tape la última tarjeta
+      />
+
+      {/* 🆕 BOTÓN FLOTANTE (FAB) PARA CREACIÓN DE PROYECTO */}
+      <TouchableOpacity 
+        style={styles.fab} 
+        activeOpacity={0.8}
+        onPress={() => setModalNuevoProyectoVisible(true)}
+      >
+        <Text style={styles.fabTexto}>+</Text>
+      </TouchableOpacity>
+
+      {/* 🆕 MODAL D: CREACIÓN DE NUEVO PROYECTO DESDE LA APP */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={modalNuevoProyectoVisible}
+        onRequestClose={() => setModalNuevoProyectoVisible(false)}
+      >
+        <View style={styles.capaFondoModal}>
+          <View style={styles.contenidoModal}>
+            <Text style={styles.modalTitulo}>Crear Nuevo Frente de Obra</Text>
+            <Text style={[styles.modalSubtitulo, { color: '#87C442' }]}>Configuración de nuevo punto de control</Text>
+            
+            <Text style={styles.modalLabel}>Nombre Completo del Proyecto / Obra:</Text>
+            <TextInput 
+              style={styles.modalInputProyectoNombre} 
+              placeholder="Ej: Edificio Av. El Dorado - Torre 2" 
+              placeholderTextColor="#999"
+              value={nuevoProyectoNombre}
+              onChangeText={setNuevoProyectoNombre}
+            />
+
+            <View style={styles.modalBotonera}>
+              <TouchableOpacity 
+                style={[styles.modalBtn, styles.modalBtnCancelar]} 
+                onPress={() => { setModalNuevoProyectoVisible(false); setNuevoProyectoNombre(''); }}
+                disabled={creandoProyecto}
+              >
+                <Text style={styles.btnTextoBlanco}>Cancelar</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[styles.modalBtn, styles.modalBtnGuardar]} 
+                onPress={handleCrearProyecto}
+                disabled={creandoProyecto}
+              >
+                <Text style={styles.btnTextoBlanco}>
+                  {creandoProyecto ? "Creando..." : "Crear Proyecto"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -753,11 +851,13 @@ const styles = StyleSheet.create({
   modalInputCorto: { width: 80, backgroundColor: '#F1F3F5', borderWidth: 1, borderColor: '#CFD8DC', borderRadius: 8, padding: 8, fontSize: 16, textAlign: 'center' },
   modalInputLargo: { width: '100%', backgroundColor: '#F1F3F5', borderWidth: 1, borderColor: '#CFD8DC', borderRadius: 8, padding: 12, fontSize: 14, textAlignVertical: 'top' },
   
+  // 🆕 Estilo específico para la caja del nombre de proyecto
+  modalInputProyectoNombre: { width: '100%', backgroundColor: '#F1F3F5', borderWidth: 1, borderColor: '#CFD8DC', borderRadius: 8, padding: 14, fontSize: 15, color: '#333' },
+
   camaraBotonera: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginBottom: 10, marginTop: 4 },
   btnCamaraAccion: { backgroundColor: '#0284c7', paddingVertical: 12, paddingHorizontal: 15, borderRadius: 8, flex: 0.48, alignItems: 'center' },
   btnCamaraTexto: { color: '#FFF', fontWeight: 'bold', fontSize: 13 },
   
-  // Estilos del Formulario Multi-foto
   contenedorMiniatura: { marginRight: 10, position: 'relative' },
   fotoMiniaturaForm: { width: 70, height: 70, borderRadius: 8, borderWidth: 1, borderColor: '#CBD5E1' },
   badgeQuitarFoto: { position: 'absolute', top: -4, right: -4, backgroundColor: '#EF4444', width: 18, height: 18, borderRadius: 9, justifyContent: 'center', alignItems: 'center' },
@@ -768,7 +868,6 @@ const styles = StyleSheet.create({
   textoNotasGuardadas: { fontSize: 14, color: '#333', lineHeight: 20 },
   sinFotoContenedor: { width: '100%', backgroundColor: '#F1F3F5', padding: 16, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#CFD8DC', borderStyle: 'dashed' },
 
-  // Estilos de la visualización en Carrusel
   contenedorCarrusel: { width: '100%', height: 220, borderRadius: 10, marginTop: 5 },
   fotoEvidenciaCarrusel: { width: SCREEN_WIDTH - 80, height: 220, borderRadius: 10, resizeMode: 'contain', backgroundColor: '#000' },
   contenedorPuntos: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 10 },
@@ -784,5 +883,29 @@ const styles = StyleSheet.create({
 
   textoVacio: { fontSize: 14, color: '#7A7B80', textAlign: 'center', marginTop: 20 },
   btnVolver: { backgroundColor: '#495057', paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginTop: 10, marginBottom: 20 },
-  btnVolverTexto: { color: '#FFF', fontSize: 15, fontWeight: 'bold' }
+  btnVolverTexto: { color: '#FFF', fontSize: 15, fontWeight: 'bold' },
+
+  // 🆕 ESTILOS DEL BOTÓN FLOTANTE (FAB)
+  fab: {
+    position: 'absolute',
+    bottom: 25,
+    right: 25,
+    backgroundColor: '#87C442',
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+  },
+  fabTexto: {
+    color: '#FFF',
+    fontSize: 32,
+    fontWeight: '300',
+    marginTop: -3 // Centrado óptico del símbolo +
+  }
 });
